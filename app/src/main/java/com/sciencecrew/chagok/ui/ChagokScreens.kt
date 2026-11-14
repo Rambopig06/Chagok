@@ -18,10 +18,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -47,6 +49,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sciencecrew.chagok.chagok.AiState
+import com.sciencecrew.chagok.chagok.CarType
+import com.sciencecrew.chagok.chagok.Popup
+import com.sciencecrew.chagok.chagok.carTags
+import com.sciencecrew.chagok.chagok.startOfDay
 import com.sciencecrew.chagok.chagok.ChagokController
 import com.sciencecrew.chagok.chagok.Screen
 import com.sciencecrew.chagok.chagok.TO_ALL
@@ -190,8 +196,12 @@ fun ChagokApp(c: ChagokController, monitor: DrivingStateMonitor, navi: NaviRepos
                 s is Screen.Handover -> HandoverScreen(c, s)
                 s is Screen.NoteDetail -> NoteDetailScreen(c, s.noteId)
                 s is Screen.TripLog -> TripLogScreen(c)
+                s is Screen.Schedules -> ScheduleScreen(c)
+                s is Screen.Settings -> SettingsScreen(c)
                 else -> HomeScreen(c, parked = policy.state == DrivingState.PARKED)
             }
+            // 팝업: 주행 중에는 띄우지 않음 (음성으로만 안내)
+            if (!policy.simpleUi) PopupLayer(c)
         }
     }
 }
@@ -224,12 +234,18 @@ private fun HomeScreen(c: ChagokController, parked: Boolean = true) {
                     T("아직 남긴 말이 없어요", 22, Chagok.Sub, modifier = Modifier.padding(vertical = px(20)))
                 }
                 notes.take(2).forEachIndexed { i, n ->
-                    Column(Modifier.fillMaxWidth().clickable { c.openNote(n.id) }.padding(vertical = px(20))) {
-                        T(n.text, 25, maxLines = 2)
+                    val hidden = c.store.hiddenFrom(n, driver)
+                    Column(Modifier.fillMaxWidth().clickable(enabled = !hidden) { c.openNote(n.id) }.padding(vertical = px(20))) {
+                        T(if (hidden) "비공개 메시지예요" else n.text, 25, if (hidden) Chagok.Sub else Chagok.Ink, maxLines = 2)
                         Spacer(Modifier.height(px(8)))
-                        val to = if (n.recipient == TO_ALL) "가족 모두에게" else "${n.recipient}님에게"
-                        val heard = if (n.heardBy.isNotEmpty()) " · 전달 완료" else ""
-                        T("${n.author}님 · ${whenText(n.createdAt)} · $to$heard", 17, Chagok.Sub, spacing = 1f)
+                        val to = if (n.recipient == TO_ALL) "${c.toAllLabel()}에게" else "${n.recipient}님에게"
+                        // 나에게 온 메시지면 읽음/안 읽음, 내가 남긴 메시지면 전달 여부
+                        val state = when {
+                            c.store.isFor(n, driver) -> if (driver in n.heardBy) " · 읽은 메시지" else " · 안 읽은 메시지"
+                            n.heardBy.isNotEmpty() -> " · 전달 완료"
+                            else -> ""
+                        }
+                        T("${n.author}님 · ${whenText(n.createdAt)} · $to$state", 17, Chagok.Sub, spacing = 1f, maxLines = 1)
                     }
                     if (i == 0 && notes.size > 1) Hairline(color = Chagok.LineSoft)
                 }
@@ -267,7 +283,11 @@ private fun SideNav(c: ChagokController, driver: String) {
     var adding by remember { mutableStateOf(false) }
     var newName by remember { mutableStateOf("") }
     var addError by remember { mutableStateOf<String?>(null) }
-    val drivers by c.store.drivers.collectAsStateWithLifecycle()
+    val all by c.store.drivers.collectAsStateWithLifecycle()
+    val carType by c.store.carType.collectAsStateWithLifecycle()
+    val profiles by c.store.profiles.collectAsStateWithLifecycle()
+    val drivers = remember(all, carType, profiles) { c.store.visibleDrivers(all) }
+    val rental = carType == CarType.RENTAL
     Row(Modifier.fillMaxHeight()) {
         Column(
             Modifier.width(px(260)).fillMaxHeight().verticalScroll(rememberScrollState())
@@ -293,21 +313,37 @@ private fun SideNav(c: ChagokController, driver: String) {
             // 펼쳐지는 세로 목록
             if (open) {
                 Column(Modifier.fillMaxWidth().border(1.dp, Chagok.Line).background(Color.White)) {
-                    drivers.forEach { name ->
-                        val selected = name == driver
+                    // 운전자가 많아도 목록은 4명 높이까지만 보이고 나머지는 안에서 스크롤 (화면을 덮지 않게)
+                    Column(Modifier.fillMaxWidth().heightIn(max = px(54 * 4 + 4)).verticalScroll(rememberScrollState())) {
+                        drivers.forEach { name ->
+                            val selected = name == driver
+                            val locked = profiles[name]?.private == true
+                            Row(
+                                Modifier.fillMaxWidth().height(px(54))
+                                    .background(if (selected) Chagok.Ink else Color.White)
+                                    .clickable { open = false; adding = false; c.requestSwitch(name) }
+                                    .padding(horizontal = px(18)),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                T("${name}님", 22, if (selected) Chagok.OnInk else Chagok.Ink, medium = selected, modifier = Modifier.weight(1f), maxLines = 1)
+                                if (selected) T("지금", 15, Chagok.OnInk, spacing = 2f)
+                                else if (locked) T("비공개", 14, Chagok.Sub, spacing = 1f)
+                            }
+                            Hairline(color = Chagok.LineSoft)
+                        }
+                    }
+                    if (rental) {
+                        // 렌터카: 이름 입력 없이 일회용 운전자(운전자N)로 대여 시작
                         Row(
-                            Modifier.fillMaxWidth().height(px(54))
-                                .background(if (selected) Chagok.Ink else Color.White)
-                                .clickable { open = false; adding = false; c.switchDriver(name) }
+                            Modifier.fillMaxWidth().height(px(54)).clickable { open = false; c.startRental() }
                                 .padding(horizontal = px(18)),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            T("${name}님", 22, if (selected) Chagok.OnInk else Chagok.Ink, medium = selected, modifier = Modifier.weight(1f))
-                            if (selected) T("지금", 15, Chagok.OnInk, spacing = 2f)
+                            T("+", 24, medium = true)
+                            Spacer(Modifier.width(px(10)))
+                            T("새 운전자", 20, Chagok.WeakText, spacing = 1f)
                         }
-                        Hairline(color = Chagok.LineSoft)
-                    }
-                    if (!adding) {
+                    } else if (!adding) {
                         // + 운전자 추가
                         Row(
                             Modifier.fillMaxWidth().height(px(54)).clickable { adding = true; newName = ""; addError = null }
@@ -335,7 +371,7 @@ private fun SideNav(c: ChagokController, driver: String) {
                                 PrimaryButton("추가", Modifier.weight(1f), height = 52) {
                                     val err = c.store.addDriver(newName)
                                     if (err == null) {
-                                        c.switchDriver(newName.trim().removeSuffix("님").trim())
+                                        c.requestSwitch(newName.trim().removeSuffix("님").trim())
                                         adding = false; open = false
                                     } else addError = err
                                 }
@@ -350,7 +386,9 @@ private fun SideNav(c: ChagokController, driver: String) {
             NavItem("홈", selected = true) {}
             NavItem("남김말 녹음") { c.startRecord() }
             NavItem("도착 할 일 추가") { c.startAddTodo() }
+            NavItem("일정") { c.openSchedules() }
             NavItem("운행일지") { c.openTripLog() }
+            NavItem("설정") { c.openSettings() }
         }
         Box(Modifier.width(1.dp).fillMaxHeight().background(Chagok.Line))
     }
@@ -433,11 +471,24 @@ private fun RecordScreen(c: ChagokController) {
         }
 
         Spacer(Modifier.height(px(36)))
+        // 받는 사람: '모두' + 특정 운전자는 드롭다운 안에 숨김 (운전자가 많아도 화면이 복잡해지지 않게)
+        var pickOpen by remember { mutableStateOf(false) }
+        val others = c.store.visibleDrivers(drivers).filter { it != driver }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(px(40))) {
             T("받는 사람", 20, Chagok.Sub, spacing = 2f)
-            UnderlineChoice(TO_ALL, recipient == TO_ALL) { c.pickRecipient(TO_ALL) }
-            drivers.filter { it != driver }.take(3).forEach { name ->
-                UnderlineChoice("${name}님", recipient == name) { c.pickRecipient(name) }
+            UnderlineChoice(c.toAllLabel(), recipient == TO_ALL) { c.pickRecipient(TO_ALL); pickOpen = false }
+            if (others.isNotEmpty()) {
+                UnderlineChoice(if (recipient != TO_ALL) "${recipient}님 ▾" else "특정 운전자 ▾", recipient != TO_ALL) { pickOpen = !pickOpen }
+            }
+        }
+        if (pickOpen) {
+            Row(Modifier.padding(top = px(8)).border(1.dp, Chagok.Line).background(Color.White)
+                .heightIn(max = px(60)), horizontalArrangement = Arrangement.spacedBy(px(4))) {
+                others.take(10).forEach { name ->
+                    Box(Modifier.clickable { c.pickRecipient(name); pickOpen = false }.padding(horizontal = px(16), vertical = px(12))) {
+                        T("${name}님", 19, medium = name == recipient)
+                    }
+                }
             }
         }
 
@@ -576,6 +627,7 @@ private fun HandoverScreen(c: ChagokController, h: Screen.Handover) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(px(20))) {
             PrimaryButton("확인했어요", Modifier.weight(2f)) { c.closeHandover() }
             LineButton("다시 듣기", Modifier.weight(1f)) { c.readHandover() }
+            if (h.notes.isNotEmpty()) LineButton("읽지 않음으로 표시", Modifier.weight(1f), weak = true) { c.markHandoverUnread() }
         }
     }
 }
@@ -603,7 +655,7 @@ private fun NoteDetailScreen(c: ChagokController, noteId: Long) {
     val n = notes.firstOrNull { it.id == noteId }
     if (n == null) { HomeScreen(c); return }
     val canDelete = c.store.canDelete(n, driver)
-    val to = if (n.recipient == TO_ALL) "가족 모두에게" else "${n.recipient}님에게"
+    val to = if (n.recipient == TO_ALL) "${c.toAllLabel()}에게" else "${n.recipient}님에게"
     val heard = if (n.heardBy.isNotEmpty()) "전달 완료 (${n.heardBy.joinToString { "${it}님" }})" else "아직 전달 전"
 
     Column(Modifier.fillMaxSize().padding(start = px(120), end = px(120), top = px(56), bottom = px(48))) {
@@ -614,6 +666,11 @@ private fun NoteDetailScreen(c: ChagokController, noteId: Long) {
         T(n.text, 36, spacing = 0.5f, maxLines = 3)
         Spacer(Modifier.height(px(8)))
         T(heard, 17, Chagok.Sub, spacing = 1f)
+        val tags = carTags(n.text)
+        if (tags.isNotEmpty()) {
+            Spacer(Modifier.height(px(6)))
+            T(tags.joinToString(" ") { "#$it" }, 17, medium = true, spacing = 1f)
+        }
 
         Spacer(Modifier.height(px(28)))
         Row(Modifier.fillMaxWidth().padding(bottom = px(8)), verticalAlignment = Alignment.CenterVertically) {
@@ -797,3 +854,312 @@ private fun TripLogScreen(c: ChagokController) {
         }
     }
 }
+
+// ------------------------------------------------------------------
+// 팝업 (비밀번호 · 안 읽은 메시지 · 서비스센터 · 일정 알림)
+// ------------------------------------------------------------------
+@Composable
+private fun PopupLayer(c: ChagokController) {
+    val popup by c.popup.collectAsStateWithLifecycle()
+    val p = popup ?: return
+    Box(Modifier.fillMaxSize().background(Color(0x99111111)).clickable(enabled = false) {}, contentAlignment = Alignment.Center) {
+        Column(
+            Modifier.width(px(if (p is Popup.Pin) 520 else 760)).background(Chagok.Bg).border(1.dp, Chagok.Ink)
+                .padding(horizontal = px(48), vertical = px(36)),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            when (p) {
+                is Popup.Pin -> PinPad(c, p)
+                is Popup.Unread -> {
+                    Label("UNREAD · 읽지 않은 메시지 ${p.notes.size}개")
+                    Spacer(Modifier.height(px(20)))
+                    Column(Modifier.fillMaxWidth().heightIn(max = px(260)).verticalScroll(rememberScrollState())) {
+                        p.notes.forEach { n ->
+                            T("${n.author}님 · ${whenText(n.createdAt)}", 16, Chagok.Sub, spacing = 1f)
+                            Spacer(Modifier.height(px(4)))
+                            T(n.text, 26, maxLines = 2)
+                            Spacer(Modifier.height(px(14)))
+                        }
+                    }
+                    Spacer(Modifier.height(px(16)))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(px(16))) {
+                        PrimaryButton("확인", Modifier.weight(1f), height = 76) { c.answerUnread(confirm = true) }
+                        LineButton("읽지 않음으로 표시", Modifier.weight(1f), height = 76) { c.answerUnread(confirm = false) }
+                    }
+                }
+                is Popup.Service -> {
+                    Label("SERVICE · 차량 점검 안내")
+                    Spacer(Modifier.height(px(18)))
+                    T(p.tags.joinToString(" ") { "#$it" }, 20, medium = true, spacing = 1f, align = TextAlign.Center)
+                    Spacer(Modifier.height(px(10)))
+                    T("\"${p.note}\"", 22, Chagok.Sub, align = TextAlign.Center, maxLines = 2)
+                    Spacer(Modifier.height(px(18)))
+                    T("가까운 서비스센터를 안내해 드릴까요?", 32, align = TextAlign.Center)
+                    Spacer(Modifier.height(px(8)))
+                    T("'네' 또는 '아니요'라고 말해도 돼요", 16, Chagok.Sub, spacing = 1f)
+                    Spacer(Modifier.height(px(24)))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(px(16))) {
+                        PrimaryButton("안내해 줘", Modifier.weight(1f), height = 76) { c.answerService(true) }
+                        LineButton("괜찮아요", Modifier.weight(1f), weak = true, height = 76) { c.answerService(false) }
+                    }
+                }
+                is Popup.Notice -> {
+                    Label("SCHEDULE · 일정 알림")
+                    Spacer(Modifier.height(px(18)))
+                    T(p.title, 22, Chagok.Sub, spacing = 2f)
+                    Spacer(Modifier.height(px(10)))
+                    T(p.body, 40, align = TextAlign.Center, maxLines = 2)
+                    Spacer(Modifier.height(px(28)))
+                    PrimaryButton("확인", Modifier.fillMaxWidth(), height = 76) { c.closePopup() }
+                }
+            }
+        }
+    }
+}
+
+/** 숫자 4자리 비밀번호 키패드 */
+@Composable
+private fun PinPad(c: ChagokController, p: Popup.Pin) {
+    var pin by remember(p) { mutableStateOf("") }
+    Label(if (p.forSetting) "PIN · 내 비밀번호 정하기" else "LOGIN · 비공개 운전자")
+    Spacer(Modifier.height(px(14)))
+    T(if (p.forSetting) "${p.name}님 비밀번호 4자리" else "${p.name}님 비밀번호를 눌러 주세요", 26, align = TextAlign.Center)
+    Spacer(Modifier.height(px(18)))
+    Row(horizontalArrangement = Arrangement.spacedBy(px(18))) {
+        repeat(4) { i ->
+            Box(Modifier.width(px(18)).height(px(18)).background(if (i < pin.length) Chagok.Ink else Color.Transparent, RoundedCornerShape(50))
+                .border(1.dp, Chagok.Ink, RoundedCornerShape(50)))
+        }
+    }
+    Spacer(Modifier.height(px(10)))
+    T(p.error ?: " ", 16, Chagok.Ink, medium = true)
+    Spacer(Modifier.height(px(10)))
+    val keys = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "취소", "0", "←")
+    keys.chunked(3).forEach { row ->
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(px(10))) {
+            row.forEach { k ->
+                Box(
+                    Modifier.weight(1f).height(px(64)).border(1.dp, if (k.length == 1) Chagok.Ink else Chagok.WeakBorder, RoundedCornerShape(2.dp))
+                        .clickable {
+                            when (k) {
+                                "취소" -> c.closePopup()
+                                "←" -> pin = pin.dropLast(1)
+                                else -> if (pin.length < 4) {
+                                    pin += k
+                                    if (pin.length == 4) { val done = pin; pin = ""; c.submitPin(done) }
+                                }
+                            }
+                        },
+                    contentAlignment = Alignment.Center,
+                ) { T(k, if (k.length == 1) 28 else 18, if (k.length == 1) Chagok.Ink else Chagok.WeakText) }
+            }
+        }
+        Spacer(Modifier.height(px(10)))
+    }
+}
+
+// ------------------------------------------------------------------
+// 일정 (주차 중): 달력에서 날짜 고르기 + 이름·장소·시간 입력, 또는 말로 입력
+// ------------------------------------------------------------------
+@Composable
+private fun ScheduleScreen(c: ChagokController) {
+    val d by c.scheduleDraft.collectAsStateWithLifecycle()
+    val all by c.store.schedules.collectAsStateWithLifecycle()
+    val driver by c.store.driver.collectAsStateWithLifecycle()
+    val status by c.speech.status.collectAsStateWithLifecycle()
+    val partial by c.speech.partial.collectAsStateWithLifecycle()
+    val listening = status is SpeechInput.Status.Listening
+    var monthShift by remember { mutableStateOf(0) }
+    val mine = all.filter { it.owner == driver }
+
+    Row(Modifier.fillMaxSize().padding(start = px(64), end = px(64), top = px(44), bottom = px(40)), horizontalArrangement = Arrangement.spacedBy(px(56))) {
+        // ---- 왼쪽: 달력 + 그날 일정 ----
+        Column(Modifier.width(px(460)).fillMaxHeight()) {
+            Label("PARKED · 일정")
+            Spacer(Modifier.height(px(14)))
+            val month = Calendar.getInstance().apply { set(Calendar.DAY_OF_MONTH, 1); add(Calendar.MONTH, monthShift) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                T("◀", 22, modifier = Modifier.clickable { monthShift-- }.padding(px(8)))
+                T("${month.get(Calendar.YEAR)}년 ${month.get(Calendar.MONTH) + 1}월", 26, align = TextAlign.Center, modifier = Modifier.weight(1f))
+                T("▶", 22, modifier = Modifier.clickable { monthShift++ }.padding(px(8)))
+            }
+            Spacer(Modifier.height(px(8)))
+            Row(Modifier.fillMaxWidth()) {
+                listOf("일", "월", "화", "수", "목", "금", "토").forEach { T(it, 15, Chagok.Sub, align = TextAlign.Center, modifier = Modifier.weight(1f)) }
+            }
+            val firstDow = month.get(Calendar.DAY_OF_WEEK) - 1
+            val daysIn = month.getActualMaximum(Calendar.DAY_OF_MONTH)
+            val cells = List(firstDow) { 0 } + (1..daysIn).toList()
+            cells.chunked(7).forEach { week ->
+                Row(Modifier.fillMaxWidth()) {
+                    week.forEach { day ->
+                        val dayStart = if (day == 0) 0L else (month.clone() as Calendar).apply { set(Calendar.DAY_OF_MONTH, day) }.timeInMillis.let { startOfDay(it) }
+                        val sel = day != 0 && dayStart == d.dayMillis
+                        val has = day != 0 && mine.any { startOfDay(it.at) == dayStart }
+                        Column(
+                            Modifier.weight(1f).height(px(46)).background(if (sel) Chagok.Ink else Color.Transparent)
+                                .clickable(enabled = day != 0) { c.editSchedule(d.copy(dayMillis = dayStart)) },
+                            horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
+                        ) {
+                            if (day != 0) {
+                                T("$day", 18, if (sel) Chagok.OnInk else Chagok.Ink, medium = sel)
+                                Box(Modifier.width(px(5)).height(px(5)).background(if (has) (if (sel) Chagok.OnInk else Chagok.Ink) else Color.Transparent, RoundedCornerShape(50)))
+                            }
+                        }
+                    }
+                    repeat(7 - week.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+            Spacer(Modifier.height(px(14)))
+            Hairline()
+            val today = mine.filter { startOfDay(it.at) == d.dayMillis }
+            Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+                if (today.isEmpty()) T("이날 일정이 없어요", 18, Chagok.Sub, modifier = Modifier.padding(top = px(12)))
+                today.forEach { sc ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = px(8)), verticalAlignment = Alignment.CenterVertically) {
+                        T(SimpleDateFormat("HH:mm", Locale.KOREA).format(Date(sc.at)), 18, medium = true, modifier = Modifier.width(px(70)))
+                        T(sc.title + if (sc.place.isNotBlank()) " · ${sc.place}" else "", 18, modifier = Modifier.weight(1f), maxLines = 1)
+                        T("삭제", 15, Chagok.Sub, modifier = Modifier.clickable { c.deleteSchedule(sc.id) }.padding(px(6)))
+                    }
+                }
+            }
+        }
+
+        // ---- 오른쪽: 입력 ----
+        Column(Modifier.weight(1f).fillMaxHeight()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                T("${driver}님 일정 추가", 30, modifier = Modifier.weight(1f))
+                VoiceWave(c.speech, maxHeight = 36)
+            }
+            Spacer(Modifier.height(px(8)))
+            T(when {
+                listening && partial.isNotBlank() -> partial
+                listening -> "듣고 있어요 · 예) 내일 오후 3시 강남역에서 치과 예약"
+                d.sentence.isNotBlank() -> "\"${d.sentence}\" → 이렇게 이해했어요"
+                else -> "직접 입력하거나 '말로 입력'을 눌러 한 번에 말씀하세요"
+            }, 16, Chagok.Sub, maxLines = 2)
+            Spacer(Modifier.height(px(18)))
+            Hairline()
+            FieldRow("일정 이름", d.title, "예) 치과 예약") { c.editSchedule(d.copy(title = it.take(20))) }
+            Hairline(color = Chagok.LineSoft)
+            FieldRow("장소", d.place, "예) 강남역") { c.editSchedule(d.copy(place = it.take(20))) }
+            Hairline(color = Chagok.LineSoft)
+            Row(Modifier.fillMaxWidth().padding(vertical = px(14)), verticalAlignment = Alignment.CenterVertically) {
+                T("날짜·시간", 16, Chagok.Sub, medium = true, spacing = 3f, modifier = Modifier.width(px(120)))
+                T(SimpleDateFormat("M월 d일 (E)", Locale.KOREA).format(Date(d.dayMillis)), 22, modifier = Modifier.width(px(150)))
+                Stepper("%02d시".format(d.hour), { c.editSchedule(d.copy(hour = (d.hour + 23) % 24)) }, { c.editSchedule(d.copy(hour = (d.hour + 1) % 24)) })
+                Spacer(Modifier.width(px(14)))
+                Stepper("%02d분".format(d.minute), { c.editSchedule(d.copy(minute = (d.minute + 50) % 60)) }, { c.editSchedule(d.copy(minute = (d.minute + 10) % 60)) })
+            }
+            Hairline(color = Chagok.LineSoft)
+            Spacer(Modifier.height(px(10)))
+            T("일정 30분 전과 10분 전에 음성으로 알려 드려요", 16, Chagok.Sub)
+            Spacer(Modifier.weight(1f))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(px(16))) {
+                PrimaryButton("저장", Modifier.weight(2f), enabled = d.title.isNotBlank()) { c.saveSchedule() }
+                LineButton(if (listening) "듣는 중" else "말로 입력", Modifier.weight(1f)) { c.listenSchedule() }
+                LineButton("닫기", Modifier.weight(1f), weak = true) { c.cancel() }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FieldRow(label: String, value: String, hint: String, onChange: (String) -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(vertical = px(14)), verticalAlignment = Alignment.CenterVertically) {
+        T(label, 16, Chagok.Sub, medium = true, spacing = 3f, modifier = Modifier.width(px(120)))
+        Box(Modifier.weight(1f).border(1.dp, Chagok.Line).padding(horizontal = px(14), vertical = px(10))) {
+            if (value.isEmpty()) T(hint, 22, Chagok.Sub)
+            BasicTextField(
+                value = value, onValueChange = onChange, singleLine = true,
+                textStyle = TextStyle(fontFamily = Chagok.Font, fontWeight = FontWeight.Light, fontSize = fs(22), color = Chagok.Ink),
+                cursorBrush = SolidColor(Chagok.Ink), modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+@Composable
+private fun Stepper(text: String, onMinus: () -> Unit, onPlus: () -> Unit) {
+    Row(Modifier.border(1.dp, Chagok.Ink, RoundedCornerShape(2.dp)), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.width(px(40)).height(px(48)).clickable(onClick = onMinus), contentAlignment = Alignment.Center) { T("−", 22) }
+        T(text, 20, medium = true, align = TextAlign.Center, modifier = Modifier.width(px(64)))
+        Box(Modifier.width(px(40)).height(px(48)).clickable(onClick = onPlus), contentAlignment = Alignment.Center) { T("+", 22) }
+    }
+}
+
+// ------------------------------------------------------------------
+// 설정 (주차 중): 차량 종류 · 내 비밀번호 · 공개/비공개 · 운전자 관리
+// ------------------------------------------------------------------
+@Composable
+private fun SettingsScreen(c: ChagokController) {
+    val carType by c.store.carType.collectAsStateWithLifecycle()
+    val driver by c.store.driver.collectAsStateWithLifecycle()
+    val profiles by c.store.profiles.collectAsStateWithLifecycle()
+    val all by c.store.drivers.collectAsStateWithLifecycle()
+    val me = profiles[driver]
+    val drivers = remember(all, carType, profiles) { c.store.visibleDrivers(all) }
+    var confirmDel by remember { mutableStateOf<String?>(null) }
+
+    Column(Modifier.fillMaxSize().padding(start = px(120), end = px(120), top = px(52), bottom = px(48))) {
+        Label("PARKED · 설정")
+        Spacer(Modifier.height(px(20)))
+        SettingRow("차량 종류") {
+            CarType.entries.forEach { t -> UnderlineChoice(t.label, carType == t) { c.store.setCarType(t) } }
+        }
+        T(when (carType) {
+            CarType.RENTAL -> "렌터카: 운전자는 '운전자1, 운전자2…'처럼 일회용으로 만들어지고, 새 운전자가 대여를 시작하면 이전 운전자 계정은 지워져요. 다음 운전자에게 남긴 말은 그대로 전해져요."
+            else -> "가정용·법인 차량: 운전자를 최대 10명까지 등록할 수 있어요. (지금 ${drivers.size}명)"
+        }, 16, Chagok.Sub, modifier = Modifier.padding(bottom = px(10)))
+        Hairline(color = Chagok.LineSoft)
+        SettingRow("${driver}님 비밀번호") {
+            T(if (me?.pin != null) "설정됨 (••••)" else "없음", 20, modifier = Modifier.width(px(180)))
+            LineButton(if (me?.pin != null) "바꾸기" else "숫자 4자리 정하기", Modifier.width(px(220)), height = 56) { c.startSetPin() }
+            if (me?.pin != null) LineButton("지우기", Modifier.width(px(120)), weak = true, height = 56) { c.store.setPin(driver, null) }
+        }
+        Hairline(color = Chagok.LineSoft)
+        SettingRow("공개 여부") {
+            UnderlineChoice("공개", me?.private != true) { c.store.setPrivate(driver, false) }
+            UnderlineChoice("비공개", me?.private == true) { if (me?.pin != null) c.store.setPrivate(driver, true) else c.startSetPin() }
+        }
+        T("비공개로 하면 이 운전자로 바꿀 때 비밀번호를 묻고, 이 운전자에게 온 메모 내용은 다른 운전자 화면에서 가려져요.", 16, Chagok.Sub,
+            modifier = Modifier.padding(bottom = px(10)))
+        Hairline(color = Chagok.LineSoft)
+        if (carType != CarType.RENTAL) {
+            SettingRow("운전자 관리") {
+                Row(Modifier.weight(1f).horizontalScrollRow(), horizontalArrangement = Arrangement.spacedBy(px(10))) {
+                    drivers.filter { it != driver }.forEach { name ->
+                        val asking = confirmDel == name
+                        Box(Modifier.border(1.dp, if (asking) Chagok.Ink else Chagok.Line)
+                            .background(if (asking) Chagok.Ink else Color.Transparent)
+                            .clickable { if (asking) { c.store.removeDriver(name); confirmDel = null } else confirmDel = name }
+                            .padding(horizontal = px(12), vertical = px(8))) {
+                            T(if (asking) "${name}님 지울까요? 한 번 더 누르기" else "${name}님 ✕", 17, if (asking) Chagok.OnInk else Chagok.Ink)
+                        }
+                    }
+                }
+            }
+            T("이름을 두 번 누르면 그 운전자를 지워요 (그 사람이 남긴 메모는 남아요)", 15, Chagok.Sub)
+        } else {
+            SettingRow("대여") {
+                LineButton("새 운전자로 대여 시작", Modifier.width(px(320)), height = 56) { c.startRental() }
+            }
+        }
+        Spacer(Modifier.weight(1f))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            LineButton("닫기", Modifier.width(px(240)), weak = true) { c.cancel() }
+        }
+    }
+}
+
+@Composable
+private fun SettingRow(label: String, content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(vertical = px(14)), verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(px(24))) {
+        T(label, 17, Chagok.Sub, medium = true, spacing = 3f, modifier = Modifier.width(px(220)))
+        content()
+    }
+}
+
+@Composable
+private fun Modifier.horizontalScrollRow(): Modifier = this.then(Modifier.horizontalScroll(rememberScrollState()))

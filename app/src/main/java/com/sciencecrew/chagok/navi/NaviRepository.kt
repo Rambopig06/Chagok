@@ -2,6 +2,9 @@ package com.sciencecrew.chagok.navi
 
 import ai.pleos.playground.navi.constants.NaviErrorCode
 import ai.pleos.playground.navi.constants.NavigationStatus
+import ai.pleos.playground.navi.constants.RouteOption
+import ai.pleos.playground.navi.data.CurrentLocationInfo
+import ai.pleos.playground.navi.data.RouteInfo
 import ai.pleos.playground.navi.data.DestinationArrivedInfo
 import ai.pleos.playground.navi.data.DestinationInfo
 import ai.pleos.playground.navi.data.DrivingInfo
@@ -76,6 +79,7 @@ class NaviRepository(context: Context) {
             _info.update { it.copy(destinationName = d.name.ifBlank { it.destinationName }, remainDistanceM = d.distance, remainTimeSec = d.duration) }
         }
         override fun onRoutingCompleted() {
+            routeRequested = false
             Log.d(TAG, "경로 탐색 완료")
             navi.getDestinationInfo()
         }
@@ -89,11 +93,36 @@ class NaviRepository(context: Context) {
             _arrived.tryEmit(info.name)
             _info.update { it.copy(destinationName = null, remainDistanceM = null, remainTimeSec = null) }
         }
+        override fun onCurrentLocationInfo(info: CurrentLocationInfo) {
+            Log.d(TAG, "현재 위치 ${info.latitude}, ${info.longitude}")
+            _location.value = info.latitude to info.longitude
+        }
         override fun onError(errorCode: NaviErrorCode) {
             Log.w(TAG, "내비 오류 $errorCode")
+            if (routeRequested) { routeRequested = false; _routeFailed.tryEmit(errorCode.toString()) }
             _info.update { it.copy(error = errorCode.toString()) }
         }
     }
+
+    /** 우리가 요청한 경로 탐색이 실패했을 때 (예: 경로 탐색 서버 오류) */
+    @Volatile private var routeRequested = false
+    private val _routeFailed = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val routeFailed: SharedFlow<String> = _routeFailed
+
+    /** 마지막으로 받은 현재 위치 (위도, 경도). 내비가 아직 안 알려 줬으면 null */
+    private val _location = MutableStateFlow<Pair<Double, Double>?>(null)
+    val location: StateFlow<Pair<Double, Double>?> = _location.asStateFlow()
+
+    /** 현재 위치 요청 (결과는 onCurrentLocationInfo로 옴) */
+    fun requestLocation() { runCatching { navi.getCurrentLocationInfo() }.onFailure { Log.w(TAG, "위치 요청 실패", it) } }
+
+    /** 좌표로 경로 안내 요청 (NaviHelper.requestRoute). 성공 여부는 내비 이벤트로 옴 */
+    fun routeTo(lat: Double, lon: Double, name: String, address: String, poiId: String = ""): Boolean = runCatching {
+        // 공식 문서 예시(Destinations)와 같은 형태: 표시 좌표 null, poiSubId "0"
+        navi.requestRoute(RouteInfo(lat, lon, null, null, name, poiId, address, "0", RouteOption.RECOMMENDED, "", false))
+        routeRequested = true
+        Log.d(TAG, "경로 요청: $name ($lat, $lon)")
+    }.onFailure { Log.w(TAG, "경로 요청 실패", it) }.isSuccess
 
     fun start() {
         navi.initialize(

@@ -22,6 +22,12 @@ class DemoReceiver : BroadcastReceiver() {
                 Log.d("Chagok", "시연용 도착: $it")
                 chagok.onArrived(it)
             }
+            // 경로 요청 시험 (공식 문서 예시처럼 POI ID를 넣어 요청)
+            "com.sciencecrew.chagok.DEMO_ROUTE" -> {
+                val app = context.applicationContext as PleosApplication
+                app.naviRepo.routeTo(intent.getStringExtra("lat")!!.toDouble(), intent.getStringExtra("lon")!!.toDouble(),
+                    intent.getStringExtra("name") ?: "시험", intent.getStringExtra("addr") ?: "", intent.getStringExtra("poi") ?: "")
+            }
             "com.sciencecrew.chagok.DEMO_SAY" -> intent.getStringExtra("text")?.let {
                 Log.d("Chagok", "시연용 음성 입력: $it")
                 chagok.demoSpeech(it)

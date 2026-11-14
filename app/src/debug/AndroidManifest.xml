@@ -8,6 +8,7 @@
             <intent-filter>
                 <action android:name="com.sciencecrew.chagok.DEMO_ARRIVE" />
                 <action android:name="com.sciencecrew.chagok.DEMO_SAY" />
+                <action android:name="com.sciencecrew.chagok.DEMO_ROUTE" />
             </intent-filter>
         </receiver>
     </application>
