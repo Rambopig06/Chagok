@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- debug 빌드 전용: 시연용 도착 이벤트 수신기 (release APK에는 포함되지 않음) -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <receiver
+            android:name=".DemoReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.sciencecrew.chagok.DEMO_ARRIVE" />
+                <action android:name="com.sciencecrew.chagok.DEMO_SAY" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

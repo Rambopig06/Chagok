@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 기어(Gear)·주행 거리(Odometer) 읽기: Pleos Vehicle SDK의 @RequiresPermission 값. 일반(normal) 권한 -->
+    <uses-permission android:name="pleos.car.permission.CAR_DRIVE" />
+    <!-- 자동 차량 상태 인수인계·하차 안전 체크: 문·트렁크·보닛 열림 읽기 (뒷좌석 문 감지 포함). 일반(normal) 권한, 제어 아님 -->
+    <uses-permission android:name="pleos.car.permission.CAR_DOORS" />
+    <!-- 창문·선루프 열림 읽기 (주차 시 안내). 일반(normal) 권한, 제어 아님 -->
+    <uses-permission android:name="pleos.car.permission.CAR_WINDOWS" />
+    <!-- 경고등 상태 읽기 (주차 시 1회 조회: 타이어 공기압·엔진 경고 등). 일반(normal) 권한. PRIVATE_CAR_SAFETY는 사용 안 함 -->
+    <uses-permission android:name="pleos.car.permission.CAR_SAFETY" />
+    <!-- 배터리 잔량·충전구 상태 읽기 (운행일지 배터리 사용량, 충전 필요 안내). 일반(normal) 권한 -->
+    <uses-permission android:name="pleos.car.permission.CAR_ENERGY" />
+    <!-- 주차 브레이크(PARKING_BRAKE_ON) 읽기: Pleos SDK에 없어 AAOS 표준 사용. 일반(normal) 권한 -->
+    <uses-permission android:name="android.car.permission.CAR_POWERTRAIN" />
+    <!-- 차량 속도(PERF_VEHICLE_SPEED) 읽기: AAOS 표준. 위험(dangerous) 권한이라 실행 중 사용자 허락 필요 -->
+    <uses-permission android:name="android.car.permission.CAR_SPEED" />
+
+    <!-- 음성 안내(TTS): 주행 상태가 바뀔 때 짧게 읽어 줌. Pleos TextToSpeech SDK 필수 권한(공식 문서). 일반(normal) 권한 -->
+    <uses-permission android:name="pleos.car.permission.TTS_SERVICE" />
+    <!-- 음성 입력(STT): 마이크 버튼을 눌렀을 때만 인식. Pleos SpeechToText SDK 필수 권한(공식 문서). 일반(normal) 권한 -->
+    <uses-permission android:name="pleos.car.permission.STT_SERVICE" />
+
+    <!-- 내비 정보 읽기(목적지·남은 거리·시간): NaviHelper get*Info 계열 권한(공식 문서·SDK). 일반(normal) 권한. 경로 설정 권한은 넣지 않음 -->
+    <uses-permission android:name="pleos.car.permission.NAVI_ROUTE" />
+
+    <!-- 글레오 AI 도움: 메모에서 'AI 도움'을 누를 때만 메모 내용을 기기 안 LLM에 보내 해결책을 받음. Pleos LLM SDK @RequiresPermission 값. 일반(normal) 권한 -->
+    <uses-permission android:name="pleos.car.permission.LLM_SERVICE" />
+
+    <application
+        android:name=".PleosApplication"
+        android:label="@string/app_name"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <!-- 주행 중에도 이 화면을 쓸 수 있다고 선언 (AOSP Driver Distraction 가이드).
+                 대신 앱은 CarUxRestrictions를 따라 주행 중 단순 화면으로 바꿔야 함 (Pleos 주행 제한 가이드) -->
+            <meta-data android:name="distractionOptimized" android:value="true" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
