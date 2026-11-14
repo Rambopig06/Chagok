@@ -164,6 +164,7 @@ adb logcat -s Chagok Condition DrivingState VoiceGuide SpeechInput NaviRepo Gleo
 ## 디자인
 
 - 배경 #F6F6F6, 대표색 검정 #111111, 버튼 글씨 흰색, 가는 구분선 중심의 미니멀 레이아웃
+- 앱 아이콘: **운전대 + 말풍선** (운전 중엔 말로 전한다는 뜻). 도형으로 직접 그린 벡터 어댑티브 아이콘(`res/drawable/ic_launcher_foreground.xml`), 원본은 `docs/icon/app-icon.svg`, 1024×1024 PNG는 `docs/icon/app-icon-1024.png`
 - 서체: **IBM Plex Sans KR** (SIL Open Font License 1.1, 라이선스 전문 `licenses/OFL-IBMPlexSansKR.txt`)
   - 시안에 쓴 열린고딕은 앱 임베딩에 윤디자인의 별도 허락이 필요해 앱에는 넣지 않았습니다. 허락을 받으면 `app/src/main/res/font`의 파일 두 개만 교체하면 됩니다.
 

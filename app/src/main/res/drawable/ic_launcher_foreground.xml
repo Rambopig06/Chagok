@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 차곡 앱 아이콘 (12 운전대 말풍선): 운전 중엔 말로 전한다는 뜻.
+     원본 SVG(1024 좌표)를 그대로 옮기고, 어댑티브 아이콘 안전 영역(66dp/108dp)에 들어오도록 0.72배로 줄임 (다른 차량 앱 아이콘과 여백을 맞춤) -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="1024"
+    android:viewportHeight="1024">
+    <group android:pivotX="512" android:pivotY="512" android:scaleX="0.72" android:scaleY="0.72">
+        <!-- 운전대 테 -->
+        <path
+            android:pathData="M212,512 A300,300 0 1,0 812,512 A300,300 0 1,0 212,512 Z"
+            android:strokeColor="#FFFFFF"
+            android:strokeWidth="64" />
+        <!-- 살 (좌·우·아래) -->
+        <path
+            android:pathData="M244,470 H380 M644,470 H780 M512,640 V790"
+            android:strokeColor="#FFFFFF"
+            android:strokeWidth="64"
+            android:strokeLineCap="round" />
+        <!-- 가운데 말풍선 -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M432,400 H592 Q652,400 652,460 V560 Q652,620 592,620 H536 L496,664 L496,620 H432 Q372,620 372,560 V460 Q372,400 432,400 Z" />
+        <!-- 말풍선 안 점 세 개 -->
+        <path
+            android:fillColor="#111111"
+            android:pathData="M432,510 a20,20 0 1,0 40,0 a20,20 0 1,0 -40,0 M492,510 a20,20 0 1,0 40,0 a20,20 0 1,0 -40,0 M552,510 a20,20 0 1,0 40,0 a20,20 0 1,0 -40,0" />
+    </group>
+</vector>
