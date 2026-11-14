@@ -150,6 +150,13 @@ class ChagokController(
             delay(1500)
             condition.startWatching()
         }
+        // 앱을 켤 때 지금 운전자가 비공개면: 공개 운전자로 시작하고, 공개 운전자가 없으면 비밀번호부터 묻는다
+        store.driver.value.let { d ->
+            if (store.profile(d).private) {
+                val open = store.visibleDrivers().firstOrNull { !store.profile(it).private }
+                if (open != null) store.setDriver(open) else _popup.value = Popup.Pin(d, forSetting = false)
+            }
+        }
         // 일정 임박 알림: 30초마다 지금 운전자의 일정 확인
         scope.launch {
             while (true) {

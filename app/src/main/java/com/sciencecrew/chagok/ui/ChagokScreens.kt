@@ -959,8 +959,12 @@ private fun PinPad(c: ChagokController, p: Popup.Pin) {
 }
 
 // ------------------------------------------------------------------
-// 일정 (주차 중): 달력에서 날짜 고르기 + 이름·장소·시간 입력, 또는 말로 입력
+// 일정 (주차 중)
+// 기본 화면은 큰 줄 몇 개(날짜 · 시간 · 이름 · 장소 · 등록된 일정)만 보이고,
+// 날짜·시간·등록된 일정 줄을 누르면 그 기능이 화면을 꽉 채워 크게 펼쳐진다 (작은 버튼을 누를 필요 없게).
 // ------------------------------------------------------------------
+private enum class SchedulePanel { DATE, TIME, LIST }
+
 @Composable
 private fun ScheduleScreen(c: ChagokController) {
     val d by c.scheduleDraft.collectAsStateWithLifecycle()
@@ -969,122 +973,209 @@ private fun ScheduleScreen(c: ChagokController) {
     val status by c.speech.status.collectAsStateWithLifecycle()
     val partial by c.speech.partial.collectAsStateWithLifecycle()
     val listening = status is SpeechInput.Status.Listening
-    var monthShift by remember { mutableStateOf(0) }
+    var panel by remember { mutableStateOf<SchedulePanel?>(null) }
     val mine = all.filter { it.owner == driver }
 
-    Row(Modifier.fillMaxSize().padding(start = px(64), end = px(64), top = px(44), bottom = px(40)), horizontalArrangement = Arrangement.spacedBy(px(56))) {
-        // ---- 왼쪽: 달력 + 그날 일정 ----
-        Column(Modifier.width(px(460)).fillMaxHeight()) {
-            Label("PARKED · 일정")
-            Spacer(Modifier.height(px(14)))
-            val month = Calendar.getInstance().apply { set(Calendar.DAY_OF_MONTH, 1); add(Calendar.MONTH, monthShift) }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                T("◀", 22, modifier = Modifier.clickable { monthShift-- }.padding(px(8)))
-                T("${month.get(Calendar.YEAR)}년 ${month.get(Calendar.MONTH) + 1}월", 26, align = TextAlign.Center, modifier = Modifier.weight(1f))
-                T("▶", 22, modifier = Modifier.clickable { monthShift++ }.padding(px(8)))
-            }
-            Spacer(Modifier.height(px(8)))
-            Row(Modifier.fillMaxWidth()) {
-                listOf("일", "월", "화", "수", "목", "금", "토").forEach { T(it, 15, Chagok.Sub, align = TextAlign.Center, modifier = Modifier.weight(1f)) }
-            }
-            val firstDow = month.get(Calendar.DAY_OF_WEEK) - 1
-            val daysIn = month.getActualMaximum(Calendar.DAY_OF_MONTH)
-            val cells = List(firstDow) { 0 } + (1..daysIn).toList()
-            cells.chunked(7).forEach { week ->
-                Row(Modifier.fillMaxWidth()) {
-                    week.forEach { day ->
-                        val dayStart = if (day == 0) 0L else (month.clone() as Calendar).apply { set(Calendar.DAY_OF_MONTH, day) }.timeInMillis.let { startOfDay(it) }
-                        val sel = day != 0 && dayStart == d.dayMillis
-                        val has = day != 0 && mine.any { startOfDay(it.at) == dayStart }
-                        Column(
-                            Modifier.weight(1f).height(px(46)).background(if (sel) Chagok.Ink else Color.Transparent)
-                                .clickable(enabled = day != 0) { c.editSchedule(d.copy(dayMillis = dayStart)) },
-                            horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
-                        ) {
-                            if (day != 0) {
-                                T("$day", 18, if (sel) Chagok.OnInk else Chagok.Ink, medium = sel)
-                                Box(Modifier.width(px(5)).height(px(5)).background(if (has) (if (sel) Chagok.OnInk else Chagok.Ink) else Color.Transparent, RoundedCornerShape(50)))
-                            }
-                        }
-                    }
-                    repeat(7 - week.size) { Spacer(Modifier.weight(1f)) }
-                }
-            }
-            Spacer(Modifier.height(px(14)))
-            Hairline()
-            val today = mine.filter { startOfDay(it.at) == d.dayMillis }
-            Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-                if (today.isEmpty()) T("이날 일정이 없어요", 18, Chagok.Sub, modifier = Modifier.padding(top = px(12)))
-                today.forEach { sc ->
-                    Row(Modifier.fillMaxWidth().padding(vertical = px(8)), verticalAlignment = Alignment.CenterVertically) {
-                        T(SimpleDateFormat("HH:mm", Locale.KOREA).format(Date(sc.at)), 18, medium = true, modifier = Modifier.width(px(70)))
-                        T(sc.title + if (sc.place.isNotBlank()) " · ${sc.place}" else "", 18, modifier = Modifier.weight(1f), maxLines = 1)
-                        T("삭제", 15, Chagok.Sub, modifier = Modifier.clickable { c.deleteSchedule(sc.id) }.padding(px(6)))
-                    }
-                }
-            }
-        }
+    when (panel) {
+        SchedulePanel.DATE -> { DatePanel(d.dayMillis, mine.map { startOfDay(it.at) }.toSet(),
+            onPick = { c.editSchedule(d.copy(dayMillis = it)); panel = null }, onClose = { panel = null }); return }
+        SchedulePanel.TIME -> { TimePanel(d.hour, d.minute,
+            onPick = { h, m -> c.editSchedule(d.copy(hour = h, minute = m)) }, onClose = { panel = null }); return }
+        SchedulePanel.LIST -> { ScheduleListPanel(c, mine, onClose = { panel = null }); return }
+        null -> {}
+    }
 
-        // ---- 오른쪽: 입력 ----
-        Column(Modifier.weight(1f).fillMaxHeight()) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                T("${driver}님 일정 추가", 30, modifier = Modifier.weight(1f))
-                VoiceWave(c.speech, maxHeight = 36)
-            }
-            Spacer(Modifier.height(px(8)))
-            T(when {
-                listening && partial.isNotBlank() -> partial
-                listening -> "듣고 있어요 · 예) 내일 오후 3시 강남역에서 치과 예약"
-                d.sentence.isNotBlank() -> "\"${d.sentence}\" → 이렇게 이해했어요"
-                else -> "직접 입력하거나 '말로 입력'을 눌러 한 번에 말씀하세요"
-            }, 16, Chagok.Sub, maxLines = 2)
-            Spacer(Modifier.height(px(18)))
-            Hairline()
-            FieldRow("일정 이름", d.title, "예) 치과 예약") { c.editSchedule(d.copy(title = it.take(20))) }
-            Hairline(color = Chagok.LineSoft)
-            FieldRow("장소", d.place, "예) 강남역") { c.editSchedule(d.copy(place = it.take(20))) }
-            Hairline(color = Chagok.LineSoft)
-            Row(Modifier.fillMaxWidth().padding(vertical = px(14)), verticalAlignment = Alignment.CenterVertically) {
-                T("날짜·시간", 16, Chagok.Sub, medium = true, spacing = 3f, modifier = Modifier.width(px(120)))
-                T(SimpleDateFormat("M월 d일 (E)", Locale.KOREA).format(Date(d.dayMillis)), 22, modifier = Modifier.width(px(150)))
-                Stepper("%02d시".format(d.hour), { c.editSchedule(d.copy(hour = (d.hour + 23) % 24)) }, { c.editSchedule(d.copy(hour = (d.hour + 1) % 24)) })
-                Spacer(Modifier.width(px(14)))
-                Stepper("%02d분".format(d.minute), { c.editSchedule(d.copy(minute = (d.minute + 50) % 60)) }, { c.editSchedule(d.copy(minute = (d.minute + 10) % 60)) })
-            }
-            Hairline(color = Chagok.LineSoft)
-            Spacer(Modifier.height(px(10)))
-            T("일정 30분 전과 10분 전에 음성으로 알려 드려요", 16, Chagok.Sub)
+    Column(Modifier.fillMaxSize().padding(start = px(120), end = px(120), top = px(44), bottom = px(44))) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Label("PARKED · 일정")
+            Spacer(Modifier.width(px(20)))
+            T("${driver}님", 18, Chagok.Sub, spacing = 2f)
             Spacer(Modifier.weight(1f))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(px(16))) {
-                PrimaryButton("저장", Modifier.weight(2f), enabled = d.title.isNotBlank()) { c.saveSchedule() }
-                LineButton(if (listening) "듣는 중" else "말로 입력", Modifier.weight(1f)) { c.listenSchedule() }
-                LineButton("닫기", Modifier.weight(1f), weak = true) { c.cancel() }
-            }
+            VoiceWave(c.speech, maxHeight = 36)
+        }
+        Spacer(Modifier.height(px(8)))
+        T(when {
+            listening && partial.isNotBlank() -> partial
+            listening -> "듣고 있어요 · 예) 내일 오후 3시 강남역에서 치과 예약"
+            d.sentence.isNotBlank() -> "\"${d.sentence}\" → 이렇게 이해했어요"
+            else -> "줄을 누르면 크게 펼쳐져요 · '말로 입력'으로 한 번에 말해도 돼요"
+        }, 17, Chagok.Sub, maxLines = 1)
+        Spacer(Modifier.height(px(14)))
+        Hairline()
+        BigRow("날짜", SimpleDateFormat("M월 d일 (E)", Locale.KOREA).format(Date(d.dayMillis))) { panel = SchedulePanel.DATE }
+        Hairline(color = Chagok.LineSoft)
+        BigRow("시간", timeText(d.hour, d.minute)) { panel = SchedulePanel.TIME }
+        Hairline(color = Chagok.LineSoft)
+        BigField("일정 이름", d.title, "예) 치과 예약") { c.editSchedule(d.copy(title = it.take(20))) }
+        Hairline(color = Chagok.LineSoft)
+        BigField("장소", d.place, "예) 강남역") { c.editSchedule(d.copy(place = it.take(20))) }
+        Hairline(color = Chagok.LineSoft)
+        BigRow("등록된 일정", if (mine.isEmpty()) "없음" else "${mine.count { it.at > System.currentTimeMillis() }}개 예정") { panel = SchedulePanel.LIST }
+        Hairline()
+        Spacer(Modifier.weight(1f))
+        T("일정 30분 전과 10분 전에 음성으로 알려 드려요", 16, Chagok.Sub)
+        Spacer(Modifier.height(px(12)))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(px(20))) {
+            PrimaryButton("저장", Modifier.weight(2f), enabled = d.title.isNotBlank()) { c.saveSchedule() }
+            LineButton(if (listening) "듣는 중" else "말로 입력", Modifier.weight(1f)) { c.listenSchedule() }
+            LineButton("닫기", Modifier.weight(1f), weak = true) { c.cancel() }
         }
     }
 }
 
+private fun timeText(h: Int, m: Int): String {
+    val part = if (h < 12) "오전" else "오후"
+    val h12 = (h % 12).let { if (it == 0) 12 else it }
+    return "$part ${h12}시" + if (m > 0) " ${m}분" else ""
+}
+
+/** 누르면 펼쳐지는 큰 줄 (드롭다운) */
 @Composable
-private fun FieldRow(label: String, value: String, hint: String, onChange: (String) -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(vertical = px(14)), verticalAlignment = Alignment.CenterVertically) {
-        T(label, 16, Chagok.Sub, medium = true, spacing = 3f, modifier = Modifier.width(px(120)))
-        Box(Modifier.weight(1f).border(1.dp, Chagok.Line).padding(horizontal = px(14), vertical = px(10))) {
-            if (value.isEmpty()) T(hint, 22, Chagok.Sub)
+private fun BigRow(label: String, value: String, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().height(px(84)).clickable(onClick = onClick), verticalAlignment = Alignment.CenterVertically) {
+        T(label, 18, Chagok.Sub, medium = true, spacing = 3f, modifier = Modifier.width(px(200)))
+        T(value, 32, modifier = Modifier.weight(1f), maxLines = 1)
+        T("▾", 26, Chagok.Sub)
+    }
+}
+
+/** 큰 글자 입력 줄 (주차 중에만 보이는 화면) */
+@Composable
+private fun BigField(label: String, value: String, hint: String, onChange: (String) -> Unit) {
+    Row(Modifier.fillMaxWidth().height(px(84)), verticalAlignment = Alignment.CenterVertically) {
+        T(label, 18, Chagok.Sub, medium = true, spacing = 3f, modifier = Modifier.width(px(200)))
+        Box(Modifier.weight(1f).border(1.dp, Chagok.Line).padding(horizontal = px(18), vertical = px(12))) {
+            if (value.isEmpty()) T(hint, 28, Chagok.Sub)
             BasicTextField(
                 value = value, onValueChange = onChange, singleLine = true,
-                textStyle = TextStyle(fontFamily = Chagok.Font, fontWeight = FontWeight.Light, fontSize = fs(22), color = Chagok.Ink),
+                textStyle = TextStyle(fontFamily = Chagok.Font, fontWeight = FontWeight.Light, fontSize = fs(28), color = Chagok.Ink),
                 cursorBrush = SolidColor(Chagok.Ink), modifier = Modifier.fillMaxWidth(),
             )
         }
     }
 }
 
+/** 펼친 패널 위쪽: 제목 + 닫기(접기) */
 @Composable
-private fun Stepper(text: String, onMinus: () -> Unit, onPlus: () -> Unit) {
-    Row(Modifier.border(1.dp, Chagok.Ink, RoundedCornerShape(2.dp)), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.width(px(40)).height(px(48)).clickable(onClick = onMinus), contentAlignment = Alignment.Center) { T("−", 22) }
-        T(text, 20, medium = true, align = TextAlign.Center, modifier = Modifier.width(px(64)))
-        Box(Modifier.width(px(40)).height(px(48)).clickable(onClick = onPlus), contentAlignment = Alignment.Center) { T("+", 22) }
+private fun PanelHeader(title: String, onClose: () -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        T(title, 30, modifier = Modifier.weight(1f))
+        LineButton("접기 ▲", Modifier.width(px(200)), weak = true, height = 72, onClick = onClose)
+    }
+}
+
+/** 날짜 고르기: 화면을 꽉 채운 큰 달력 */
+@Composable
+private fun DatePanel(selected: Long, marked: Set<Long>, onPick: (Long) -> Unit, onClose: () -> Unit) {
+    var shift by remember { mutableStateOf(0) }
+    val month = Calendar.getInstance().apply { timeInMillis = selected; set(Calendar.DAY_OF_MONTH, 1); add(Calendar.MONTH, shift) }
+    val today = startOfDay(System.currentTimeMillis())
+    Column(Modifier.fillMaxSize().padding(start = px(120), end = px(120), top = px(36), bottom = px(36))) {
+        PanelHeader("날짜 고르기", onClose)
+        Spacer(Modifier.height(px(14)))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            LineButton("◀ 이전 달", Modifier.width(px(200)), height = 64) { shift-- }
+            T("${month.get(Calendar.YEAR)}년 ${month.get(Calendar.MONTH) + 1}월", 34, align = TextAlign.Center, modifier = Modifier.weight(1f))
+            LineButton("다음 달 ▶", Modifier.width(px(200)), height = 64) { shift++ }
+        }
+        Spacer(Modifier.height(px(12)))
+        Row(Modifier.fillMaxWidth()) {
+            listOf("일", "월", "화", "수", "목", "금", "토").forEach { T(it, 18, Chagok.Sub, medium = true, align = TextAlign.Center, modifier = Modifier.weight(1f)) }
+        }
+        Spacer(Modifier.height(px(6)))
+        val firstDow = month.get(Calendar.DAY_OF_WEEK) - 1
+        val daysIn = month.getActualMaximum(Calendar.DAY_OF_MONTH)
+        val cells = List(firstDow) { 0 } + (1..daysIn).toList()
+        Column(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(px(6))) {
+            cells.chunked(7).forEach { week ->
+                Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(px(6))) {
+                    week.forEach { day ->
+                        val dayStart = if (day == 0) 0L else startOfDay((month.clone() as Calendar).apply { set(Calendar.DAY_OF_MONTH, day) }.timeInMillis)
+                        val sel = day != 0 && dayStart == selected
+                        val past = day != 0 && dayStart < today
+                        Column(
+                            Modifier.weight(1f).fillMaxHeight()
+                                .background(if (sel) Chagok.Ink else Color.Transparent)
+                                .border(1.dp, if (day == 0) Color.Transparent else Chagok.LineSoft)
+                                .clickable(enabled = day != 0 && !past) { onPick(dayStart) },
+                            horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
+                        ) {
+                            if (day != 0) {
+                                T("$day", 28, if (sel) Chagok.OnInk else if (past) Chagok.Line else Chagok.Ink, medium = sel || dayStart == today)
+                                Box(Modifier.width(px(7)).height(px(7)).background(
+                                    if (dayStart in marked) (if (sel) Chagok.OnInk else Chagok.Ink) else Color.Transparent, RoundedCornerShape(50)))
+                            }
+                        }
+                    }
+                    repeat(7 - week.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+        }
+    }
+}
+
+/** 시간 고르기: 큰 버튼으로 시·분 선택 */
+@Composable
+private fun TimePanel(hour: Int, minute: Int, onPick: (Int, Int) -> Unit, onClose: () -> Unit) {
+    Column(Modifier.fillMaxSize().padding(start = px(120), end = px(120), top = px(36), bottom = px(36))) {
+        PanelHeader("시간 고르기 · ${timeText(hour, minute)}", onClose)
+        Spacer(Modifier.height(px(18)))
+        listOf("오전" to (0..11), "오후" to (12..23)).forEach { (part, hours) ->
+            Row(Modifier.fillMaxWidth().padding(vertical = px(4)), verticalAlignment = Alignment.CenterVertically) {
+                T(part, 20, Chagok.Sub, medium = true, modifier = Modifier.width(px(80)))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(px(6))) {
+                    hours.chunked(6).forEach { row ->
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(px(6))) {
+                            row.forEach { h ->
+                                ChoiceBox("${(h % 12).let { if (it == 0) 12 else it }}시", h == hour, Modifier.weight(1f)) { onPick(h, minute) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(px(16)))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            T("분", 20, Chagok.Sub, medium = true, modifier = Modifier.width(px(80)))
+            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(px(6))) {
+                listOf(0, 10, 20, 30, 40, 50).forEach { m -> ChoiceBox("%02d분".format(m), m == minute, Modifier.weight(1f)) { onPick(hour, m) } }
+            }
+        }
+        Spacer(Modifier.weight(1f))
+        PrimaryButton("이 시간으로 정하기", Modifier.fillMaxWidth(), onClick = onClose)
+    }
+}
+
+@Composable
+private fun ChoiceBox(text: String, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    Box(
+        modifier.height(px(80)).background(if (selected) Chagok.Ink else Color.Transparent, RoundedCornerShape(2.dp))
+            .border(1.dp, if (selected) Chagok.Ink else Chagok.WeakBorder, RoundedCornerShape(2.dp)).clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) { T(text, 26, if (selected) Chagok.OnInk else Chagok.Ink, medium = selected) }
+}
+
+/** 등록된 일정 목록: 큰 줄 + 큰 삭제 버튼 */
+@Composable
+private fun ScheduleListPanel(c: ChagokController, mine: List<com.sciencecrew.chagok.chagok.Schedule>, onClose: () -> Unit) {
+    Column(Modifier.fillMaxSize().padding(start = px(120), end = px(120), top = px(36), bottom = px(36))) {
+        PanelHeader("등록된 일정", onClose)
+        Spacer(Modifier.height(px(12)))
+        Hairline()
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            if (mine.isEmpty()) T("아직 등록된 일정이 없어요", 24, Chagok.Sub, modifier = Modifier.padding(vertical = px(24)))
+            mine.sortedBy { it.at }.forEach { sc ->
+                val past = sc.at < System.currentTimeMillis()
+                Row(Modifier.fillMaxWidth().height(px(88)), verticalAlignment = Alignment.CenterVertically) {
+                    T(SimpleDateFormat("M월 d일 (E) a h:mm", Locale.KOREA).format(Date(sc.at)), 22, if (past) Chagok.Sub else Chagok.Ink,
+                        medium = !past, modifier = Modifier.width(px(300)))
+                    T(sc.title + if (sc.place.isNotBlank()) " · ${sc.place}" else "", 26, if (past) Chagok.Sub else Chagok.Ink,
+                        modifier = Modifier.weight(1f), maxLines = 1)
+                    LineButton("삭제", Modifier.width(px(140)), weak = true, height = 64) { c.deleteSchedule(sc.id) }
+                }
+                Hairline(color = Chagok.LineSoft)
+            }
+        }
     }
 }
 
