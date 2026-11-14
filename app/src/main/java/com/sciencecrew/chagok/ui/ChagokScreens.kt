@@ -50,6 +50,7 @@ import com.sciencecrew.chagok.chagok.AiState
 import com.sciencecrew.chagok.chagok.ChagokController
 import com.sciencecrew.chagok.chagok.Screen
 import com.sciencecrew.chagok.chagok.TO_ALL
+import com.sciencecrew.chagok.driving.DrivingState
 import com.sciencecrew.chagok.driving.DrivingStateMonitor
 import com.sciencecrew.chagok.navi.NaviRepository
 import com.sciencecrew.chagok.navi.formatDistance
@@ -189,7 +190,7 @@ fun ChagokApp(c: ChagokController, monitor: DrivingStateMonitor, navi: NaviRepos
                 s is Screen.Handover -> HandoverScreen(c, s)
                 s is Screen.NoteDetail -> NoteDetailScreen(c, s.noteId)
                 s is Screen.TripLog -> TripLogScreen(c)
-                else -> HomeScreen(c)
+                else -> HomeScreen(c, parked = policy.state == DrivingState.PARKED)
             }
         }
     }
@@ -199,7 +200,7 @@ fun ChagokApp(c: ChagokController, monitor: DrivingStateMonitor, navi: NaviRepos
 // 1. 주차 중 홈
 // ------------------------------------------------------------------
 @Composable
-private fun HomeScreen(c: ChagokController) {
+private fun HomeScreen(c: ChagokController, parked: Boolean = true) {
     val driver by c.store.driver.collectAsStateWithLifecycle()
     val notes by c.store.notes.collectAsStateWithLifecycle()
     val todos by c.store.todos.collectAsStateWithLifecycle()
@@ -210,7 +211,8 @@ private fun HomeScreen(c: ChagokController) {
     Column(Modifier.weight(1f).fillMaxSize().padding(start = px(56), end = px(64), top = px(44), bottom = px(48))) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
             T("${driver}님, 안녕하세요", 30, modifier = Modifier.weight(1f))
-            Label("PARKED · 주차 중")
+            // D·R 기어로 멈춰 있을 때는 "정차 중"으로 표시
+            Label(if (parked) "PARKED · 주차 중" else "STOPPED · 정차 중")
         }
         Spacer(Modifier.height(px(20)))
         Hairline()
