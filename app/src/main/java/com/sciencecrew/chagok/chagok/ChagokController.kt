@@ -928,7 +928,12 @@ fun spokenWhen(t: Long, now: Long = System.currentTimeMillis()): String {
         set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0)
     }.timeInMillis
     val dayDiff = Math.floorDiv(today - t, 86_400_000L) + 1     // 오늘 0, 어제 1, …
+    val dayMs = 86_400_000L
     val day = when {
+        // 앞으로의 시간(일정 등): 오늘·내일·모레, 그 뒤는 날짜
+        t >= today + 3 * dayMs -> "${c.get(java.util.Calendar.MONTH) + 1}월 ${c.get(java.util.Calendar.DAY_OF_MONTH)}일"
+        t >= today + 2 * dayMs -> "모레"
+        t >= today + dayMs -> "내일"
         t >= today -> "오늘"
         dayDiff == 1L -> "어제"
         dayDiff == 2L -> "그저께"

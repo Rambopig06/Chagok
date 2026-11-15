@@ -78,6 +78,8 @@ class VehicleCondition(private val vehicleProvider: () -> Vehicle?) {
     fun beginRearCheck(): Boolean {
         val need = rearDoorUsed
         rearCheckPending = need
+        // 이번 주차에서 안내했으니 기록은 초기화 (확인 안 하고 다음 사람이 출발해도 다음 주차 때 또 안내하지 않음)
+        rearDoorUsed = false
         return need
     }
 
