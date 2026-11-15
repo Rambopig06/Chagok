@@ -520,6 +520,22 @@ class ChagokController(
         if (store.profile(d).private) lockAs(d) else announceUnread(d, "${t.label}로 바꿨어요. ${d}님으로 시작해요.")
     }
 
+    /** 시연용 예시 데이터 넣기 (가정용·법인 모드에서만) */
+    fun requestSeedDemo() {
+        askConfirm("시연용 예시 데이터를 넣을까요?", "아빠가 남긴 메모 2개, 도착 할 일 '우유 사기', 내일 일정 2개가 들어가고 지금 운전자가 아빠님으로 바뀌어요. 예시는 '예시 지우기'로 따로 지울 수 있어요.", "예시 넣기") {
+            store.seedDemo()
+            _screen.value = Screen.Home
+            voice.speak("시연용 예시를 넣었어요. 운전자를 엄마님으로 바꾸거나 출발해 보세요.")
+        }
+    }
+
+    fun requestClearDemo() {
+        askConfirm("시연용 예시 데이터를 지울까요?", "예시로 넣은 메모·할 일·일정만 지워져요. 직접 남긴 기록은 그대로예요.", "예시 지우기") {
+            store.clearDemo()
+            voice.speak("시연용 예시를 지웠어요.")
+        }
+    }
+
     /** 렌터카: 새 대여 시작 전 확인 (지금 운전자 계정이 지워짐) */
     fun requestStartRental() {
         val cur = store.driver.value

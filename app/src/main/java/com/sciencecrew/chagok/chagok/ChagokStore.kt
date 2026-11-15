@@ -362,6 +362,49 @@ class ChagokStore(context: Context) {
         }
     }.getOrDefault(emptyList())
 
+    // ---------------- 시연용 예시 데이터 (설정 화면에서 넣고 지움) ----------------
+
+    /** 예시 데이터 id는 이 값 이상 → 지울 때 예시만 정확히 지움 (실제 데이터 id는 현재 시각 ms라 겹치지 않음) */
+    private val DEMO_ID = 9_000_000_000_000L
+
+    fun hasDemo(): Boolean = allNotes.any { it.id >= DEMO_ID } || allTodos.any { it.id >= DEMO_ID } ||
+        _schedules.value.any { it.id >= DEMO_ID }
+
+    /**
+     * 가족 차 시나리오: 아빠가 주차하며 남긴 메모 2개 + 다음 운전자에게 남긴 도착 할 일 + 엄마·아빠 내일 일정.
+     * 지금 운전자를 아빠로 두어, 드롭다운에서 엄마로 바꾸거나 출발(D)하면 바로 전달 장면을 볼 수 있게 함.
+     */
+    fun seedDemo() {
+        clearDemo()
+        val now = System.currentTimeMillis()
+        listOf("아빠", "엄마").forEach { n -> if (n !in _drivers.value) saveDrivers(_drivers.value + n) }
+        val dad = "아빠"; val mom = "엄마"
+        val notes = listOf(       // 최신 메모가 위로
+            Note(DEMO_ID + 2, "뒷좌석에 아이 우산 두고 내렸어, 어린이집 갈 때 챙겨 줘", dad, mom, now - 4 * 60_000L, null),
+            Note(DEMO_ID + 1, "앞 타이어 공기압 경고등이 한 번 켜졌어, 점검 부탁해", dad, TO_ALL, now - 5 * 60_000L, null),
+        )
+        saveNotes(notes + allNotes)
+        saveTodos(listOf(ArrivalTodo(DEMO_ID + 3, "이마트 성수점", "우유 사기", dad, true, now - 3 * 60_000L)) + allTodos)
+        val tomorrow = java.util.Calendar.getInstance().apply {
+            add(java.util.Calendar.DAY_OF_MONTH, 1)
+            set(java.util.Calendar.SECOND, 0); set(java.util.Calendar.MILLISECOND, 0)
+        }
+        fun at(h: Int, m: Int) = (tomorrow.clone() as java.util.Calendar).apply {
+            set(java.util.Calendar.HOUR_OF_DAY, h); set(java.util.Calendar.MINUTE, m)
+        }.timeInMillis
+        saveSchedules((_schedules.value + listOf(
+            Schedule(DEMO_ID + 4, mom, "치과 예약", "강남역", at(10, 0)),
+            Schedule(DEMO_ID + 5, dad, "고객 미팅", "성수역", at(15, 30)),
+        )).sortedBy { it.at })
+        setDriver(dad)
+    }
+
+    fun clearDemo() {
+        saveNotes(allNotes.filter { it.id < DEMO_ID })
+        saveTodos(allTodos.filter { it.id < DEMO_ID })
+        saveSchedules(_schedules.value.filter { it.id < DEMO_ID })
+    }
+
     // ---------------- 저장 ----------------
 
     private fun saveNotes(list: List<Note>) {

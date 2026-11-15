@@ -1259,6 +1259,12 @@ private fun SettingsScreen(c: ChagokController) {
                 }
             }
             T("이름을 누르면 지울지 한 번 더 물어요. 비공개 운전자는 그 사람의 비밀번호가 필요해요", 15, Chagok.Sub)
+            Hairline(color = Chagok.LineSoft, modifier = Modifier.padding(top = px(10)))
+            // 심사·시연용: 설치 직후 빈 화면 대신 바로 전달 장면을 볼 수 있게 예시 데이터를 넣고 지움
+            SettingRow("시연용 예시") {
+                LineButton("예시 데이터 넣기", Modifier.width(px(240)), height = 56) { c.requestSeedDemo() }
+                LineButton("예시 지우기", Modifier.width(px(180)), weak = true, height = 56) { c.requestClearDemo() }
+            }
         } else {
             SettingRow("대여") {
                 LineButton("새 운전자로 대여 시작", Modifier.width(px(320)), height = 56) { c.requestStartRental() }
