@@ -34,7 +34,8 @@ fun parseSchedule(sentence: String, now: Long = System.currentTimeMillis()): Sch
     // ---- 날짜 ----
     var day: Calendar? = null
     fun plus(d: Int) = (today.clone() as Calendar).apply { add(Calendar.DAY_OF_MONTH, d) }
-    val rel = mapOf("오늘" to 0, "내일" to 1, "모레" to 2, "글피" to 3)
+    // "내일모레"가 "내일"로 먼저 잡히지 않게 긴 말부터 확인
+    val rel = linkedMapOf("내일모레" to 2, "오늘" to 0, "내일" to 1, "모레" to 2, "글피" to 3)
     for ((w, d) in rel) if (s.contains(" $w") || s.startsWith(w)) { day = plus(d); s = s.replaceFirst(w, " "); break }
     Regex("""(\d{1,2})\s*월\s*(\d{1,2})\s*일""").find(s)?.let { m ->
         val c = (today.clone() as Calendar).apply {
@@ -57,10 +58,13 @@ fun parseSchedule(sentence: String, now: Long = System.currentTimeMillis()): Sch
     // ---- 시간 ----
     var hour: Int? = null
     var minute: Int? = null
-    Regex("""(오전|오후|아침|낮|저녁|밤|새벽)?\s*(\d{1,2})\s*시\s*(반|(\d{1,2})\s*분)?""").find(s)?.let { m ->
+    var nextDayMidnight = false
+    // "2시간"처럼 '시간'은 시각이 아니므로 제외
+    Regex("""(오전|오후|아침|낮|저녁|밤|새벽)?\s*(\d{1,2})\s*시(?!간)\s*(반|(\d{1,2})\s*분)?""").find(s)?.let { m ->
         var h = m.groupValues[2].toInt()
         when (m.groupValues[1]) {
-            "오후", "저녁", "밤" -> if (h < 12) h += 12
+            "밤" -> if (h == 12) { h = 0; nextDayMidnight = true } else if (h < 12) h += 12   // 밤 12시 = 그날 자정(다음 날 0시)
+            "오후", "저녁" -> if (h < 12) h += 12
             "낮" -> if (h < 6) h += 12
             "오전", "아침", "새벽" -> if (h == 12) h = 0
             else -> if (h in 1..6) h += 12             // "3시"처럼 오전/오후가 없으면 낮 시간으로 봄
@@ -76,9 +80,14 @@ fun parseSchedule(sentence: String, now: Long = System.currentTimeMillis()): Sch
 
     // ---- 장소: "○○에서" ----
     var place: String? = null
-    Regex("""(\S+)\s*에서""").find(s)?.let { m ->
-        place = m.groupValues[1].trim()
-        s = s.replace(m.value, " ")
+    // "회사 앞에서"처럼 위치를 나타내는 말(앞·옆·뒤·근처 등)은 앞 단어와 붙여 장소로
+    Regex("""(?:(\S+)\s+)?(\S+)\s*에서""").find(s)?.let { m ->
+        val near = listOf("앞", "옆", "뒤", "근처", "건너편", "맞은편", "안", "입구", "정문", "주차장")
+        val prev = m.groupValues[1]; val word = m.groupValues[2]
+        place = if (prev.isNotBlank() && word in near) "$prev $word" else word
+        // 장소로 쓴 부분만 문장에서 지움 (위치 말이 아니면 앞 단어는 일정 이름에 남김)
+        val used = if (prev.isNotBlank() && word in near) m.value else m.value.substring(m.value.lastIndexOf(word))
+        s = s.replace(used, " ")
     }
 
     // ---- 나머지 = 일정 이름 ----
@@ -86,5 +95,7 @@ fun parseSchedule(sentence: String, now: Long = System.currentTimeMillis()): Sch
         .replace(Regex("""(일정|약속)?\s*(있어|있음|잡아\s*줘|추가해\s*줘|등록해\s*줘|알려\s*줘|넣어\s*줘)\s*$"""), "")
         .replace(Regex("""\s+"""), " ").trim().trim(',', ' ')
         .ifBlank { null }
+    // "오늘 밤 12시" → 다음 날 0시
+    if (nextDayMidnight) day?.add(Calendar.DAY_OF_MONTH, 1)
     return ScheduleParse(title, place, day?.timeInMillis, hour, minute)
 }

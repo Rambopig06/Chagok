@@ -198,6 +198,8 @@ fun ChagokApp(c: ChagokController, monitor: DrivingStateMonitor, navi: NaviRepos
                 s is Screen.Handover -> HandoverScreen(c, s)
                 s is Screen.NoteDetail -> NoteDetailScreen(c, s.noteId)
                 s is Screen.TripLog -> TripLogScreen(c)
+                s is Screen.AllNotes -> AllNotesScreen(c)
+                s is Screen.AllTodos -> AllTodosScreen(c)
                 s is Screen.Schedules -> ScheduleScreen(c)
                 s is Screen.Settings -> SettingsScreen(c)
                 else -> HomeScreen(c, parked = policy.state == DrivingState.PARKED)
@@ -231,7 +233,7 @@ private fun HomeScreen(c: ChagokController, parked: Boolean = true) {
 
         Row(Modifier.weight(1f).fillMaxWidth().padding(top = px(32)), horizontalArrangement = Arrangement.spacedBy(px(48))) {
             Column(Modifier.weight(1f)) {
-                SectionTitle("남긴 말")
+                SectionTitle("남긴 말", if (notes.isNotEmpty()) "전체 보기 ${notes.size}" else null) { c.openAllNotes() }
                 if (notes.isEmpty()) {
                     T("아직 남긴 말이 없어요", 22, Chagok.Sub, modifier = Modifier.padding(vertical = px(20)))
                 }
@@ -253,13 +255,14 @@ private fun HomeScreen(c: ChagokController, parked: Boolean = true) {
                 }
             }
             Column(Modifier.weight(1f)) {
-                SectionTitle("도착하면 알릴 일")
+                SectionTitle("도착하면 알릴 일", if (pending.isNotEmpty()) "전체 보기 ${pending.size}" else null) { c.openAllTodos() }
                 if (pending.isEmpty()) {
                     T("등록된 할 일이 없어요", 22, Chagok.Sub, modifier = Modifier.padding(vertical = px(20)))
                 }
                 pending.take(2).forEachIndexed { i, t ->
+                    val hiddenTodo = c.store.todoHiddenFrom(t, driver)
                     Row(Modifier.fillMaxWidth().padding(vertical = px(20)), verticalAlignment = Alignment.CenterVertically) {
-                        T(t.task, 25, modifier = Modifier.weight(1f), maxLines = 1)
+                        T(if (hiddenTodo) "비공개 할 일" else t.task, 25, if (hiddenTodo) Chagok.Sub else Chagok.Ink, modifier = Modifier.weight(1f), maxLines = 1)
                         T("${t.place} · ${if (t.forNextDriver) "다음 운전자에게" else "${t.author}님"}", 17, Chagok.Sub, spacing = 1f, maxLines = 1)
                     }
                     if (i == 0 && pending.size > 1) Hairline(color = Chagok.LineSoft)
@@ -406,11 +409,24 @@ private fun NavItem(text: String, selected: Boolean = false, onClick: () -> Unit
 }
 
 @Composable
-private fun SectionTitle(text: String) {
+private fun SectionTitle(text: String, action: String? = null, onAction: (() -> Unit)? = null) {
     Row(Modifier.fillMaxWidth().padding(bottom = px(8)), verticalAlignment = Alignment.CenterVertically) {
         T(text, 18, medium = true, spacing = 3f)
         Spacer(Modifier.width(px(16)))
         Hairline(Modifier.weight(1f))
+        if (action != null && onAction != null) {
+            Spacer(Modifier.width(px(12)))
+            SmallButton(action, onAction)
+        }
+    }
+}
+
+/** 작은 테두리 버튼 (손가락으로 누르기 쉬운 최소 높이 48) */
+@Composable
+private fun SmallButton(text: String, onClick: () -> Unit) {
+    Box(Modifier.height(px(48)).border(1.dp, Chagok.Ink, RoundedCornerShape(2.dp)).clickable(onClick = onClick)
+        .padding(horizontal = px(16)), contentAlignment = Alignment.Center) {
+        T(text, 17, medium = true, spacing = 1f)
     }
 }
 
@@ -470,7 +486,7 @@ private fun RecordScreen(c: ChagokController) {
             T(hint, 17, Chagok.Sub, spacing = 3f)
             if (!typing) {
                 Spacer(Modifier.width(px(24)))
-                T("직접 입력", 17, Chagok.Sub, spacing = 3f, modifier = Modifier.clickable { c.speech.cancel(); typing = true })
+                SmallButton("직접 입력") { c.startTyping(); typing = true }
             }
         }
 
@@ -572,8 +588,7 @@ private fun TodoRow(label: String, value: String, side: String, onSide: (() -> U
         T(label, 17, Chagok.Sub, medium = true, spacing = 4f, modifier = Modifier.width(px(200)))
         T(value, 30, modifier = Modifier.weight(1f), maxLines = 1)
         if (side.isNotEmpty()) {
-            T(side, 17, if (onSide != null) Chagok.Ink else Chagok.Sub,
-                modifier = if (onSide != null) Modifier.clickable(onClick = onSide).padding(px(8)) else Modifier)
+            if (onSide != null) SmallButton(side, onSide) else T(side, 17, Chagok.Sub)
         }
     }
 }
@@ -733,7 +748,10 @@ private fun DrivingScreen(c: ChagokController, navi: NaviRepository) {
     val notice by c.drivingNotice.collectAsStateWithLifecycle()
     val status by c.speech.status.collectAsStateWithLifecycle()
     val driverNow by c.store.driver.collectAsStateWithLifecycle()
-    val next = c.store.todosFor(driverNow, todos).firstOrNull()
+    val popupNow by c.popup.collectAsStateWithLifecycle()
+    // 앱을 켤 때 비밀번호를 아직 안 넣었으면 할 일을 보여 주지 않음
+    val lockedNow = (popupNow as? Popup.Pin)?.mode == PinMode.LOGIN_FORCED
+    val next = if (lockedNow) null else c.store.todosFor(driverNow, todos).firstOrNull()
 
     Column(
         Modifier.fillMaxSize().padding(start = px(120), end = px(120), top = px(56), bottom = px(48)),
@@ -1059,9 +1077,13 @@ private fun ScheduleScreen(c: ChagokController) {
 }
 
 private fun timeText(h: Int, m: Int): String {
+    val mm = if (m > 0) " ${m}분" else ""
+    // 0시·12시는 '오전 12시'처럼 헷갈리지 않게
+    if (h == 0) return "밤 12시$mm (자정)"
+    if (h == 12) return "낮 12시$mm"
     val part = if (h < 12) "오전" else "오후"
-    val h12 = (h % 12).let { if (it == 0) 12 else it }
-    return "$part ${h12}시" + if (m > 0) " ${m}분" else ""
+    val h12 = h % 12
+    return "$part ${h12}시$mm"
 }
 
 /** 누르면 펼쳐지는 큰 줄 (드롭다운) */
@@ -1293,3 +1315,85 @@ private fun SettingRow(label: String, content: @Composable androidx.compose.foun
 
 @Composable
 private fun Modifier.horizontalScrollRow(): Modifier = this.then(Modifier.horizontalScroll(rememberScrollState()))
+
+
+// ------------------------------------------------------------------
+// 전체 보기 (주차 중): 남긴 말 전체 · 도착 할 일 전체 (완료·삭제)
+// ------------------------------------------------------------------
+@Composable
+private fun AllNotesScreen(c: ChagokController) {
+    val notes by c.store.notes.collectAsStateWithLifecycle()
+    val driver by c.store.driver.collectAsStateWithLifecycle()
+    Column(Modifier.fillMaxSize().padding(start = px(120), end = px(120), top = px(44), bottom = px(40))) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Label("PARKED · 남긴 말 전체")
+            Spacer(Modifier.weight(1f))
+            T("${notes.size}개 · 누르면 AI 도움·삭제", 16, Chagok.Sub)
+        }
+        Spacer(Modifier.height(px(12)))
+        Hairline()
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            if (notes.isEmpty()) T("아직 남긴 말이 없어요", 24, Chagok.Sub, modifier = Modifier.padding(vertical = px(24)))
+            notes.forEach { n ->
+                val hidden = c.store.hiddenFrom(n, driver)
+                Column(Modifier.fillMaxWidth().clickable(enabled = !hidden) { c.openNote(n.id) }.padding(vertical = px(18))) {
+                    T(if (hidden) "비공개 메시지예요" else n.text, 26, if (hidden) Chagok.Sub else Chagok.Ink, maxLines = 2)
+                    Spacer(Modifier.height(px(6)))
+                    val to = if (n.recipient == TO_ALL) "${c.toAllLabel()}에게" else "${n.recipient}님에게"
+                    val state = when {
+                        c.store.isFor(n, driver) -> if (driver in n.heardBy) " · 읽은 메시지" else " · 안 읽은 메시지"
+                        n.heardBy.isNotEmpty() -> " · 전달 완료"
+                        else -> ""
+                    }
+                    T("${n.author}님 · ${whenText(n.createdAt)} · $to$state", 17, Chagok.Sub, spacing = 1f, maxLines = 1)
+                }
+                Hairline(color = Chagok.LineSoft)
+            }
+        }
+        Spacer(Modifier.height(px(16)))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            LineButton("닫기", Modifier.width(px(240)), weak = true) { c.cancel() }
+        }
+    }
+}
+
+@Composable
+private fun AllTodosScreen(c: ChagokController) {
+    val todos by c.store.todos.collectAsStateWithLifecycle()
+    val driver by c.store.driver.collectAsStateWithLifecycle()
+    val pending = todos.filter { !it.done }
+    Column(Modifier.fillMaxSize().padding(start = px(120), end = px(120), top = px(44), bottom = px(40))) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Label("PARKED · 도착 할 일 전체")
+            Spacer(Modifier.weight(1f))
+            T("${pending.size}개", 16, Chagok.Sub)
+        }
+        Spacer(Modifier.height(px(12)))
+        Hairline()
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            if (pending.isEmpty()) T("등록된 할 일이 없어요", 24, Chagok.Sub, modifier = Modifier.padding(vertical = px(24)))
+            pending.forEach { t ->
+                val hiddenTodo = c.store.todoHiddenFrom(t, driver)
+                Row(Modifier.fillMaxWidth().height(px(96)), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        T(if (hiddenTodo) "비공개 할 일" else t.task, 26, if (hiddenTodo) Chagok.Sub else Chagok.Ink, maxLines = 1)
+                        T(if (hiddenTodo) "${t.author}님이 자신에게 남긴 할 일" else
+                            "${t.place} 도착 시 · ${if (t.forNextDriver) "다음 운전자에게" else "${t.author}님에게"} · ${t.author}님이 남김", 17, Chagok.Sub, maxLines = 1)
+                    }
+                    // 비공개 운전자의 개인 할 일은 본인만 완료·삭제
+                    if (!hiddenTodo) {
+                        LineButton("완료", Modifier.width(px(130)), height = 64) { c.completeTodo(t.id) }
+                        Spacer(Modifier.width(px(12)))
+                        LineButton("삭제", Modifier.width(px(130)), weak = true, height = 64) { c.deleteTodo(t.id) }
+                    }
+                }
+                Hairline(color = Chagok.LineSoft)
+            }
+        }
+        Spacer(Modifier.height(px(16)))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(px(20))) {
+            PrimaryButton("도착 할 일 추가", Modifier.weight(1f), height = 80) { c.startAddTodo() }
+            LineButton("닫기", Modifier.width(px(240)), weak = true, height = 80) { c.cancel() }
+        }
+    }
+}

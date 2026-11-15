@@ -27,6 +27,9 @@ sealed interface Screen {
     /** notes: 사람이 남긴 메모, report: 지난 주차 때 차곡이 자동으로 확인한 차량 상태 */
     data class Handover(val notes: List<Note>, val drivenKm: Float?, val report: ParkReport? = null) : Screen
     data object TripLog : Screen
+    /** 홈의 '전체 보기': 남긴 말 전체 / 도착 할 일 전체 */
+    data object AllNotes : Screen
+    data object AllTodos : Screen
     data class Arrive(val todo: ArrivalTodo, val placeName: String) : Screen
     data class NoteDetail(val noteId: Long) : Screen
     data object Schedules : Screen
@@ -217,7 +220,8 @@ class ChagokController(
                 if (snap.chargePortOpen) add("충전구가 열려 있어요.")
             }
             Log.d(TAG, "주차 안전 체크: $alerts")
-            startRecord(auto = true, alerts = alerts)
+            // 비밀번호를 넣기 전(잠김)에는 그 운전자 이름으로 메모를 받지 않음
+            if (!locked()) startRecord(auto = true, alerts = alerts)
         }
     }
 
@@ -258,6 +262,10 @@ class ChagokController(
     }
 
     fun openTripLog() { speech.cancel(); _screen.value = Screen.TripLog }
+    fun openAllNotes() { speech.cancel(); voice.stop(); _screen.value = Screen.AllNotes }
+    fun openAllTodos() { speech.cancel(); voice.stop(); _screen.value = Screen.AllTodos }
+    fun deleteTodo(id: Long) { store.deleteTodo(id); voice.speak("할 일을 지웠어요.") }
+    fun completeTodo(id: Long) { store.completeTodo(id); voice.speak("완료했어요.") }
     fun closeTripLog() { _screen.value = Screen.Home }
 
     // ---------------- 남김말 ----------------
@@ -359,7 +367,8 @@ class ChagokController(
         val driver = store.driver.value
         // 방금 운전자를 바꾸며 '안 읽은 메시지' 팝업으로 들은 메모는 출발할 때 또 읽지 않음
         val justHeard = (_popup.value as? Popup.Unread)?.notes?.map { it.id }.orEmpty().toSet()
-        if (justHeard.isNotEmpty()) { voice.stop(); _popup.value = null }
+        // 팝업으로 이미 다 들었으니 읽음 처리 (다음 출발 때 또 읽지 않게)
+        if (justHeard.isNotEmpty()) { voice.stop(); _popup.value = null; store.markHeard(justHeard, driver) }
         val notes = store.unheardFor(driver).filterNot { it.id in justHeard }
         // 지난 주차 때 차곡이 확인한 차량 상태 (다른 사람이 주차했을 때만 전달)
         val report = store.parkReport.value?.takeIf { it.items().isNotEmpty() && it.driver != driver }
@@ -553,14 +562,16 @@ class ChagokController(
     fun requestSeedDemo() {
         askConfirm("시연용 예시 데이터를 넣을까요?", "아빠가 남긴 메모 2개, 도착 할 일 '우유 사기', 내일 일정 2개가 들어가고 지금 운전자가 아빠님으로 바뀌어요. 예시는 '예시 지우기'로 따로 지울 수 있어요.", "예시 넣기") {
             store.seedDemo()
+            offeredNotes.clear()                           // 다시 시연해도 서비스센터 안내가 나오게
             _screen.value = Screen.Home
-            voice.speak("시연용 예시를 넣었어요. 운전자를 엄마님으로 바꾸거나 출발해 보세요.")
+            voice.speak("시연용 예시를 넣었어요. 운전자를 엄마님으로 바꾼 뒤 출발해 보세요.")
         }
     }
 
     fun requestClearDemo() {
         askConfirm("시연용 예시 데이터를 지울까요?", "예시로 넣은 메모·할 일·일정만 지워져요. 직접 남긴 기록은 그대로예요.", "예시 지우기") {
             store.clearDemo()
+            offeredNotes.clear()
             voice.speak("시연용 예시를 지웠어요.")
         }
     }
@@ -791,6 +802,7 @@ class ChagokController(
     // ---------------- 도착 알림 ----------------
 
     fun onArrived(placeName: String) {
+        if (locked()) return
         val todo = store.todoFor(placeName, store.driver.value)
         Log.d(TAG, "도착: $placeName → 할 일 ${todo?.task}")
         if (todo == null) return
@@ -811,7 +823,11 @@ class ChagokController(
     private val _ai = MutableStateFlow<AiState>(AiState.Idle)
     val ai: StateFlow<AiState> = _ai.asStateFlow()
 
+    /** 메모 상세를 닫으면 돌아갈 화면 (전체 보기에서 열었으면 전체 보기로) */
+    private var noteReturn: Screen = Screen.Home
+
     fun openNote(id: Long) {
+        noteReturn = if (_screen.value == Screen.AllNotes) Screen.AllNotes else Screen.Home
         speech.cancel()
         gleo.cancel()
         _ai.value = AiState.Idle
@@ -822,15 +838,15 @@ class ChagokController(
         gleo.cancel()
         voice.stop()
         _ai.value = AiState.Idle
-        _screen.value = Screen.Home
+        _screen.value = noteReturn
     }
 
     fun deleteNote(id: Long) {
         val n = store.note(id) ?: return
         if (!store.canDelete(n, store.driver.value)) return
         store.deleteNote(id)
+        closeNote()                                        // 닫은 뒤에 말해야 안내가 끊기지 않음
         voice.speak("메모를 지웠어요.")
-        closeNote()
     }
 
     /** 글레오에게 메모를 보여 주고 해결책 받기 (차량 상태도 함께 알려 줌) */
@@ -889,7 +905,18 @@ class ChagokController(
 
     // ---------------- 주행 중 말로 남기기 ----------------
 
+    /** 녹음 화면의 '직접 입력': 진행 중인 안내·듣기·확인 질문을 모두 멈춤 */
+    fun startTyping() {
+        awaitingNoteConfirm = false
+        voice.stop()
+        speech.cancel()
+    }
+
+    /** 앱을 켤 때 비밀번호 대기 중인지 (주행 화면에서 할 일을 가리는 데 사용) */
+    fun isLocked() = locked()
+
     fun driveNote() {
+        if (locked()) return
         _drivingNotice.value = "말씀하세요"
         voice.speak("말씀하세요.") {
             speech.listen { text ->
@@ -950,5 +977,6 @@ fun spokenWhen(t: Long, now: Long = System.currentTimeMillis()): String {
         else -> "저녁"
     }
     val h12 = (h24 % 12).let { if (it == 0) 12 else it }
+    if (h24 == 0) return "$day 0시" + if (m > 0) " ${m}분" else ""      // 자정은 '새벽 12시' 대신 0시
     return "$day $part ${h12}시" + if (m > 0) " ${m}분" else ""
 }

@@ -31,6 +31,8 @@ data class Trip(
     val endAt: Long,
     val km: Float,
     val batteryUsedPct: Int?,
+    /** 렌터카 모드에서의 운행 (가정용·법인 운행일지와 섞이지 않게) */
+    val rental: Boolean = false,
 ) {
     val minutes: Int get() = ((endAt - startAt) / 60_000L).toInt()
 }
@@ -57,8 +59,10 @@ enum class CarType(val label: String) { FAMILY("가정용"), BUSINESS("법인 �
  */
 data class DriverProfile(
     val pin: String? = null, val private: Boolean = false, val temp: Boolean = false,
-    /** 이 운전자가 등록된 때. 그 전에 남겨진 메모는 '안 읽은 메시지'로 쏟아지지 않게 함 */
+    /** 이 운전자가 받기 시작하는 메모의 기준 시각. 그 전에 남겨진 메모는 '안 읽은 메시지'로 쏟아지지 않게 함 */
     val since: Long = 0L,
+    /** 이 운전자 계정을 만든 때 (렌터카: 이 손님이 대여를 시작한 때) */
+    val joinedAt: Long = 0L,
 )
 
 /** 메모·할 일·현재 운전자를 기기에 저장 (앱을 다시 켜도 유지) */
@@ -102,7 +106,8 @@ class ChagokStore(context: Context) {
             visibleDrivers().size >= MAX_DRIVERS -> "운전자는 ${MAX_DRIVERS}명까지 추가할 수 있어요"
             else -> {
                 saveDrivers(_drivers.value + name)
-                saveProfiles(_profiles.value + (name to DriverProfile(since = System.currentTimeMillis())))
+                val now = System.currentTimeMillis()
+                saveProfiles(_profiles.value + (name to DriverProfile(since = now, joinedAt = now)))
                 null
             }
         }
@@ -116,6 +121,8 @@ class ChagokStore(context: Context) {
         saveSchedules(_schedules.value.filterNot { it.owner == name })
         // 그 사람에게만 온 메모도 지움 (같은 이름으로 다시 만들어 비공개 메모를 보는 것 방지)
         saveNotes(allNotes.filterNot { it.recipient == name })
+        // 그 사람이 자기에게 남긴 할 일도 지움 (더는 전달될 수 없음)
+        saveTodos(allTodos.filterNot { !it.forNextDriver && it.author == name })
     }
 
     /**
@@ -128,10 +135,15 @@ class ChagokStore(context: Context) {
         prefs.edit().putInt("rentalSeq", seq).apply()
         val name = "운전자$seq"
         val old = _drivers.value.filter { profile(it).temp }
-        // 새 손님은 바로 앞 손님이 대여한 뒤에 남긴 메모만 받음 (더 오래된 손님들의 메모는 전달하지 않음)
-        val since = old.maxOfOrNull { profile(it).since } ?: System.currentTimeMillis()
+        val now = System.currentTimeMillis()
+        // 새 손님은 '바로 앞 손님이 대여를 시작한 뒤' 남겨진 것만 받음.
+        // 그보다 오래된 손님들의 렌터카 메모·할 일·운행 기록은 지움 (다음 손님에게 보이지 않게)
+        val prevStart = old.maxOfOrNull { profile(it).joinedAt }?.takeIf { it > 0 } ?: now
+        saveNotes(allNotes.filterNot { it.rental && it.createdAt < prevStart })
+        saveTodos(allTodos.filterNot { it.rental && it.createdAt < prevStart })
+        saveTripsAll(allTrips.filterNot { it.rental && it.startAt < prevStart })
         saveDrivers(_drivers.value - old.toSet() + name)
-        saveProfiles(_profiles.value - old.toSet() + (name to DriverProfile(temp = true, since = since)))
+        saveProfiles(_profiles.value - old.toSet() + (name to DriverProfile(temp = true, since = prevStart, joinedAt = now)))
         saveSchedules(_schedules.value.filterNot { it.owner in old })
         setDriver(name)
         return name
@@ -143,7 +155,9 @@ class ChagokStore(context: Context) {
         _carType.value = t
         prefs.edit().putString("carType", t.name).apply()
         refreshMode()
+        saveParkReport(null)        // 지난 주차 기록은 가정용·렌터카를 넘나들며 전하지 않음
         if (t == CarType.RENTAL) {
+            if (_drivers.value.none { profile(it).temp }) prefs.edit().putInt("rentalSeq", 0).apply()   // 새 렌터카 모드는 운전자1부터
             startRentalDriver()
         } else {
             val temps = _drivers.value.filter { profile(it).temp }
@@ -170,6 +184,10 @@ class ChagokStore(context: Context) {
 
     fun checkPin(name: String, pin: String) = profile(name).pin == pin
 
+    /** 비공개 운전자가 자기에게 남긴 할 일은 다른 사람에게 가림 */
+    fun todoHiddenFrom(t: ArrivalTodo, viewer: String): Boolean =
+        !t.forNextDriver && t.author != viewer && profile(t.author).private
+
     /** 이 메모 내용을 지금 보는 사람에게 가려야 하나 (비공개 운전자에게 온 메모) */
     fun hiddenFrom(n: Note, viewer: String): Boolean =
         n.recipient != TO_ALL && profile(n.recipient).private && viewer != n.recipient && viewer != n.author
@@ -182,7 +200,7 @@ class ChagokStore(context: Context) {
     private fun saveProfiles(map: Map<String, DriverProfile>) {
         _profiles.value = map
         val o = JSONObject()
-        map.forEach { (k, v) -> o.put(k, JSONObject().apply { v.pin?.let { put("pin", it) }; put("private", v.private); put("temp", v.temp); put("since", v.since) }) }
+        map.forEach { (k, v) -> o.put(k, JSONObject().apply { v.pin?.let { put("pin", it) }; put("private", v.private); put("temp", v.temp); put("since", v.since); put("joinedAt", v.joinedAt) }) }
         prefs.edit().putString("profiles", o.toString()).apply()
     }
 
@@ -190,7 +208,7 @@ class ChagokStore(context: Context) {
         val o = JSONObject(prefs.getString("profiles", "{}") ?: "{}")
         o.keys().asSequence().associateWith { k ->
             val v = o.getJSONObject(k)
-            DriverProfile(if (v.has("pin")) v.getString("pin") else null, v.optBoolean("private"), v.optBoolean("temp"), v.optLong("since"))
+            DriverProfile(if (v.has("pin")) v.getString("pin") else null, v.optBoolean("private"), v.optBoolean("temp"), v.optLong("since"), v.optLong("joinedAt"))
         }
     }.getOrDefault(emptyMap())
 
@@ -213,6 +231,7 @@ class ChagokStore(context: Context) {
     private fun refreshMode() {
         _notes.value = allNotes.filter { it.rental == rentalNow() }
         _todos.value = allTodos.filter { it.rental == rentalNow() }
+        _trips.value = allTrips.filter { it.rental == rentalNow() }
     }
 
     fun setDriver(name: String) {
@@ -260,6 +279,8 @@ class ChagokStore(context: Context) {
         saveTodos(listOf(t) + allTodos)
     }
 
+    fun deleteTodo(id: Long) = saveTodos(allTodos.filterNot { it.id == id })
+
     fun completeTodo(id: Long) = saveTodos(allTodos.map { if (it.id == id) it.copy(done = true) else it })
 
     fun pendingTodos(): List<ArrivalTodo> = _todos.value.filter { !it.done }
@@ -270,18 +291,24 @@ class ChagokStore(context: Context) {
 
     // ---------------- 운행일지 ----------------
 
-    private val _trips = MutableStateFlow(loadTrips())
-    /** 최근 운행 기록 (새것이 앞) */
+    private var allTrips: List<Trip> = loadTrips()
+    private val _trips = MutableStateFlow(allTrips.filter { it.rental == rentalNow() })
+    /** 최근 운행 기록 (새것이 앞, 지금 차량 종류에 맞는 것만) */
     val trips: StateFlow<List<Trip>> = _trips.asStateFlow()
 
-    fun addTrip(t: Trip) {
-        val list = (listOf(t) + _trips.value).take(MAX_TRIPS)
-        _trips.value = list
+    fun addTrip(trip: Trip) {
+        val t = trip.copy(rental = rentalNow())
+        saveTripsAll((listOf(t) + allTrips).take(MAX_TRIPS))
+    }
+
+    private fun saveTripsAll(list: List<Trip>) {
+        allTrips = list
+        _trips.value = list.filter { it.rental == rentalNow() }
         val arr = JSONArray()
         list.forEach { x ->
             arr.put(JSONObject().apply {
                 put("driver", x.driver); put("start", x.startAt); put("end", x.endAt); put("km", x.km.toDouble())
-                x.batteryUsedPct?.let { put("bat", it) }
+                x.batteryUsedPct?.let { put("bat", it) }; put("rental", x.rental)
             })
         }
         prefs.edit().putString("trips", arr.toString()).apply()
@@ -292,7 +319,7 @@ class ChagokStore(context: Context) {
         (0 until arr.length()).map { i ->
             val o = arr.getJSONObject(i)
             Trip(o.getString("driver"), o.getLong("start"), o.getLong("end"), o.getDouble("km").toFloat(),
-                if (o.has("bat")) o.getInt("bat") else null)
+                if (o.has("bat")) o.getInt("bat") else null, o.optBoolean("rental"))
         }
     }.getOrDefault(emptyList())
 
@@ -396,7 +423,8 @@ class ChagokStore(context: Context) {
             Schedule(DEMO_ID + 4, mom, "치과 예약", "강남역", at(10, 0)),
             Schedule(DEMO_ID + 5, dad, "고객 미팅", "성수역", at(15, 30)),
         )).sortedBy { it.at })
-        setDriver(dad)
+        // 아빠가 비공개면 비밀번호 없이 바꾸지 않음
+        if (!profile(dad).private) setDriver(dad)
     }
 
     fun clearDemo() {

@@ -24,6 +24,8 @@ class VoiceGuide(context: Context) {
     private var pending: Pair<String, (() -> Unit)?>? = null
     private var onDoneCallback: (() -> Unit)? = null
     @Volatile private var speaking = false
+    /** 말이 끝난 뒤 0.7초 뒤에 실행하려고 예약해 둔 다음 동작 (멈추면 취소) */
+    private var scheduled: Runnable? = null
 
     /** 지금 말하는 중이거나, 말이 끝난 뒤 이어서 할 동작(듣기 등)이 남아 있음 → 다른 안내를 끼워 넣지 말 것 */
     val busy: Boolean get() = speaking || onDoneCallback != null || pending != null
@@ -67,19 +69,23 @@ class VoiceGuide(context: Context) {
         val cb = onDoneCallback ?: return
         onDoneCallback = null
         // 스피커 소리가 완전히 사라진 뒤에 다음 동작(듣기 등) 시작 → 안내 음성이 마이크로 다시 들어가는 것 방지
-        main.postDelayed(cb, AFTER_SPEAK_GAP_MS)
+        val r = Runnable { scheduled = null; cb() }
+        scheduled = r
+        main.postDelayed(r, AFTER_SPEAK_GAP_MS)
     }
 
     /** 읽어 주고, 다 읽으면 onDone 호출 (다음 동작 이어가기용) */
     fun speak(text: String, onDone: (() -> Unit)? = null) {
         if (!ready) { pending = text to onDone; return }
         Log.d(TAG, "speak: $text")
+        scheduled?.let { main.removeCallbacks(it) }; scheduled = null
         onDoneCallback = onDone
         speaking = true
         tts.speak(text, true)   // isFinal = true: 한 번에 완성된 문장
     }
 
     fun stop() {
+        scheduled?.let { main.removeCallbacks(it) }; scheduled = null
         onDoneCallback = null
         speaking = false
         runCatching { tts.stop() }
