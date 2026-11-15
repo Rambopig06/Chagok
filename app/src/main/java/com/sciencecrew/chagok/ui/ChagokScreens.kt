@@ -105,10 +105,11 @@ private fun VLine(height: Int) = Box(Modifier.width(1.dp).height(px(height)).bac
 
 /** 검정 바탕 + 흰 글씨 (주 버튼) */
 @Composable
-private fun PrimaryButton(text: String, modifier: Modifier = Modifier, height: Int = 88, enabled: Boolean = true, onClick: () -> Unit) {
+private fun PrimaryButton(text: String, modifier: Modifier = Modifier, height: Int = 88, enabled: Boolean = true,
+                          color: Color = Chagok.Ink, onClick: () -> Unit) {
     Box(
         modifier.height(px(height))
-            .background(if (enabled) Chagok.Ink else Chagok.Line, RoundedCornerShape(2.dp))
+            .background(if (enabled) color else Chagok.Line, RoundedCornerShape(2.dp))
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) { T(text, 24, Chagok.OnInk, spacing = 3f) }
@@ -461,7 +462,7 @@ private fun RecordScreen(c: ChagokController) {
         }
         Spacer(Modifier.height(px(14)))
         val hint = when (val s = status) {
-            SpeechInput.Status.Listening -> "듣고 있어요 · 말씀을 마치면 2초 뒤 자동으로 끝나요"
+            SpeechInput.Status.Listening -> "듣고 있어요 · 말을 마치면 2초 뒤 끝나요 · '여기까지 남기기'를 누르면 바로 저장"
             is SpeechInput.Status.Error -> s.message
             else -> if (draft.isBlank()) "" else "이대로 남길까요?"
         }
@@ -498,9 +499,13 @@ private fun RecordScreen(c: ChagokController) {
       }
         Spacer(Modifier.height(px(16)))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(px(20))) {
-            PrimaryButton("남기기", Modifier.weight(2f), enabled = draft.isNotBlank()) { c.saveNote() }
+            // 녹음 중에도 누를 수 있음: 지금까지 말한 내용으로 바로 끝내고 저장.
+            // 항상 검은 버튼으로 둠 (흐리면 '못 누르는 버튼'으로 오해) → 받아 적은 말이 없을 때는 음성으로 알려 줌
+            PrimaryButton("여기까지 남기기", Modifier.weight(2f), color = Chagok.Rec) {
+                typing = false; c.finishRecordingNow()
+            }
             LineButton("다시 말하기", Modifier.weight(1f)) { typing = false; c.retryNote() }
-            LineButton("건너뛰기", Modifier.weight(1f), weak = true) { c.cancel() }
+            LineButton("건너뛰기", Modifier.weight(1f)) { c.cancel() }
         }
     }
 }

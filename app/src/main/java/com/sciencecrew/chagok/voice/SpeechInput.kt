@@ -147,6 +147,7 @@ class SpeechInput(context: Context) {
         val wasListening = _status.value is Status.Listening
         if (wasListening) runCatching { stt.stop() }
         session++
+        stopping = false
         onFinal = onResult
         committed = ""; current = ""; hasSpoken = false; maxRms = 0.0; rmsCount = 0
         startedAt = SystemClock.elapsedRealtime(); lastVoiceAt = startedAt
@@ -164,8 +165,45 @@ class SpeechInput(context: Context) {
         main.postDelayed(ticker, 200)
     }
 
+    /** '여기까지 남기기'로 마무리 중 (이때는 다시 듣기를 이어 가지 않음) */
+    private var stopping = false
+
+    /**
+     * 사용자가 '여기까지 남기기'를 눌렀을 때: 조용해질 때까지 기다리지 않고 바로 마이크를 끈다.
+     * 음성 인식은 말하는 동안 글자를 늦게 보내는 경우가 많아, 끈 뒤 마지막 결과를 최대 1.5초 기다렸다가
+     * 지금까지 받아 적은 글 전체를 onDone으로 돌려준다 (글이 없으면 빈 문자열). 다시 듣기는 하지 않는다.
+     */
+    fun finishNow(onDone: (String) -> Unit) {
+        if (_status.value !is Status.Listening) { onDone(join(committed, current).trim()); return }
+        main.removeCallbacks(ticker)
+        stopping = true
+        onFinal = null
+        val s = session
+        runCatching { stt.stop() }
+        _level.value = 0f
+        val started = SystemClock.elapsedRealtime()
+        val waiter = object : Runnable {
+            override fun run() {
+                if (s != session) return
+                val text = join(committed, current).trim()
+                // 글이 들어왔거나 1.5초가 지나면 마무리
+                if (text.replace(" ", "").length >= MIN_TEXT_CHARS && SystemClock.elapsedRealtime() - started >= 400 ||
+                    SystemClock.elapsedRealtime() - started >= 1_500) {
+                    Log.d(TAG, "듣기 바로 끝냄(여기까지) → \"$text\"")
+                    session++
+                    stopping = false
+                    _partial.value = text
+                    _status.value = if (text.isBlank()) Status.Error("말소리를 못 들었어요") else Status.Idle
+                    onDone(text)
+                } else main.postDelayed(this, 100)
+            }
+        }
+        main.postDelayed(waiter, 100)
+    }
+
     fun cancel() {
         main.removeCallbacks(ticker)
+        stopping = false
         onFinal = null
         runCatching { stt.stop() }
         _level.value = 0f
@@ -179,7 +217,7 @@ class SpeechInput(context: Context) {
 
     /** SDK가 한 문장을 끝냈지만 사용자는 아직 말하는 중일 수 있음 → 다시 듣기 */
     private fun restartIfStillListening() {
-        if (_status.value !is Status.Listening) return
+        if (_status.value !is Status.Listening || stopping) return
         val s = session
         main.postDelayed({
             if (s == session && _status.value is Status.Listening) runCatching { stt.request() }

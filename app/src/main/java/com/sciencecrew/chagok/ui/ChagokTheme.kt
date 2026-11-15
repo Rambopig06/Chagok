@@ -18,8 +18,9 @@ object Chagok {
     val Line = Color(0xFFD2D2D2)      // 구역 구분선
     val LineSoft = Color(0xFFE5E5E5)  // 목록 사이 구분선
     val OnInk = Color(0xFFFFFFFF)     // 버튼 글씨
-    val WeakBorder = Color(0xFF8C8C8C) // 취소·건너뛰기 버튼 테두리 (쓸 수 있는 버튼으로 보이게 진하게)
-    val WeakText = Color(0xFF333333)   // 취소·건너뛰기 버튼 글씨
+    val WeakBorder = Color(0xFF4A4A4A) // 취소·닫기 버튼 테두리 (흐려 보여 '못 누르는 버튼'으로 오해하지 않게 진하게)
+    val WeakText = Color(0xFF1F1F1F)   // 취소·닫기 버튼 글씨
+    val Rec = Color(0xFFD7263D)        // 녹음 마무리 버튼 '여기까지 남기기' (녹음 정지처럼 눈에 띄게)
 
     val Font = FontFamily(
         Font(R.font.plex_kr_light, FontWeight.Light),

@@ -264,6 +264,7 @@ class ChagokController(
 
     fun startRecord(auto: Boolean = false, alerts: List<String> = emptyList()) {
         speech.cancel()
+        awaitingNoteConfirm = false
         _noteDraft.value = ""
         _recipient.value = TO_ALL
         if (!auto) _parkAlerts.value = emptyList() else _parkAlerts.value = alerts
@@ -288,6 +289,34 @@ class ChagokController(
             if (!awaitingNoteConfirm || _screen.value != Screen.Record) return@speak
             speech.listen { answer -> answerNoteConfirm(answer) }
         }
+    }
+
+    /**
+     * '여기까지 남기기': 녹음 중이면 바로 멈추고 지금까지 말한 내용으로 저장.
+     * 녹음이 끝난 뒤("이대로 남길까요?" 묻는 중 포함)에는 화면의 글을 그대로 저장.
+     */
+    fun finishRecordingNow() {
+        if (_screen.value != Screen.Record) return
+        voice.stop()
+        val listening = speech.status.value is com.sciencecrew.chagok.voice.SpeechInput.Status.Listening
+        if (listening && !awaitingNoteConfirm) {
+            // 마이크를 바로 끄고, 마지막으로 받아 적힌 글까지 모아 저장 (녹음을 다시 켜지 않음)
+            speech.finishNow { text ->
+                if (_screen.value != Screen.Record) return@finishNow
+                if (text.isNotBlank()) _noteDraft.value = text
+                saveOrTellEmpty()
+            }
+        } else {
+            speech.cancel()
+            saveOrTellEmpty()
+        }
+    }
+
+    private fun saveOrTellEmpty() {
+        if (_noteDraft.value.isBlank()) {
+            awaitingNoteConfirm = false
+            voice.speak("말소리를 못 들었어요. 남기시려면 다시 말하기를 누르거나 직접 입력해 주세요.")
+        } else saveNote()
     }
 
     private fun answerNoteConfirm(answer: String) {
@@ -753,6 +782,7 @@ class ChagokController(
     }
 
     fun cancel() {
+        awaitingNoteConfirm = false
         speech.cancel()
         voice.stop()
         _screen.value = Screen.Home
