@@ -51,6 +51,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sciencecrew.chagok.chagok.AiState
 import com.sciencecrew.chagok.chagok.CarType
 import com.sciencecrew.chagok.chagok.Popup
+import com.sciencecrew.chagok.chagok.PinMode
 import com.sciencecrew.chagok.chagok.carTags
 import com.sciencecrew.chagok.chagok.startOfDay
 import com.sciencecrew.chagok.chagok.ChagokController
@@ -335,7 +336,7 @@ private fun SideNav(c: ChagokController, driver: String) {
                     if (rental) {
                         // 렌터카: 이름 입력 없이 일회용 운전자(운전자N)로 대여 시작
                         Row(
-                            Modifier.fillMaxWidth().height(px(54)).clickable { open = false; c.startRental() }
+                            Modifier.fillMaxWidth().height(px(54)).clickable { open = false; c.requestStartRental() }
                                 .padding(horizontal = px(18)),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
@@ -431,6 +432,8 @@ private fun RecordScreen(c: ChagokController) {
         Modifier.fillMaxSize().padding(start = px(120), end = px(120), top = px(56), bottom = px(48)),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+      // 안전 안내 + 긴 메모가 함께 떠도 아래 버튼이 밀려나지 않게 가운데만 스크롤
+      Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally) {
         Label("PARKED · 남김말")
         val alerts by c.parkAlerts.collectAsStateWithLifecycle()
         if (alerts.isNotEmpty()) {
@@ -492,7 +495,8 @@ private fun RecordScreen(c: ChagokController) {
             }
         }
 
-        Spacer(Modifier.weight(1f))
+      }
+        Spacer(Modifier.height(px(16)))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(px(20))) {
             PrimaryButton("남기기", Modifier.weight(2f), enabled = draft.isNotBlank()) { c.saveNote() }
             LineButton("다시 말하기", Modifier.weight(1f)) { typing = false; c.retryNote() }
@@ -578,7 +582,9 @@ private fun HandoverScreen(c: ChagokController, h: Screen.Handover) {
     val first = h.notes.minByOrNull { it.createdAt }
     val carItems = h.report?.items().orEmpty()
 
+    val driverNow by c.store.driver.collectAsStateWithLifecycle()
     Column(Modifier.fillMaxSize().padding(start = px(120), end = px(120), top = px(52), bottom = px(48))) {
+      Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())) {
         Row(Modifier.fillMaxWidth()) {
             Label("READY · 출발 전")
             Spacer(Modifier.weight(1f))
@@ -620,10 +626,10 @@ private fun HandoverScreen(c: ChagokController, h: Screen.Handover) {
         Row(Modifier.fillMaxWidth()) {
             Stat("그사이 주행", h.drivenKm?.let { "%.0f km".format(it) } ?: "-", Modifier.weight(1f), first = true)
             Stat("주차한 때", (h.report?.at ?: first?.createdAt)?.let { whenText(it) } ?: "-", Modifier.weight(1f))
-            Stat("도착 할 일", "${todos.count { !it.done }}개", Modifier.weight(1f))
+            Stat("도착 할 일", "${c.store.todosFor(driverNow, todos).size}개", Modifier.weight(1f))
         }
-
-        Spacer(Modifier.weight(1f))
+      }
+        Spacer(Modifier.height(px(16)))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(px(20))) {
             PrimaryButton("확인했어요", Modifier.weight(2f)) { c.closeHandover() }
             LineButton("다시 듣기", Modifier.weight(1f)) { c.readHandover() }
@@ -721,7 +727,8 @@ private fun DrivingScreen(c: ChagokController, navi: NaviRepository) {
     val nav by navi.info.collectAsStateWithLifecycle()
     val notice by c.drivingNotice.collectAsStateWithLifecycle()
     val status by c.speech.status.collectAsStateWithLifecycle()
-    val next = todos.firstOrNull { !it.done }
+    val driverNow by c.store.driver.collectAsStateWithLifecycle()
+    val next = c.store.todosFor(driverNow, todos).firstOrNull()
 
     Column(
         Modifier.fillMaxSize().padding(start = px(120), end = px(120), top = px(56), bottom = px(48)),
@@ -903,6 +910,18 @@ private fun PopupLayer(c: ChagokController) {
                         LineButton("괜찮아요", Modifier.weight(1f), weak = true, height = 76) { c.answerService(false) }
                     }
                 }
+                is Popup.Confirm -> {
+                    Label("CHECK · 확인")
+                    Spacer(Modifier.height(px(18)))
+                    T(p.title, 32, align = TextAlign.Center)
+                    Spacer(Modifier.height(px(12)))
+                    T(p.body, 20, Chagok.Sub, align = TextAlign.Center, maxLines = 3)
+                    Spacer(Modifier.height(px(28)))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(px(16))) {
+                        PrimaryButton(p.ok, Modifier.weight(1f), height = 76) { c.answerConfirm(true) }
+                        LineButton("취소", Modifier.weight(1f), weak = true, height = 76) { c.answerConfirm(false) }
+                    }
+                }
                 is Popup.Notice -> {
                     Label("SCHEDULE · 일정 알림")
                     Spacer(Modifier.height(px(18)))
@@ -921,9 +940,19 @@ private fun PopupLayer(c: ChagokController) {
 @Composable
 private fun PinPad(c: ChagokController, p: Popup.Pin) {
     var pin by remember(p) { mutableStateOf("") }
-    Label(if (p.forSetting) "PIN · 내 비밀번호 정하기" else "LOGIN · 비공개 운전자")
+    val setting = p.mode == PinMode.SET || p.mode == PinMode.SET_PRIVATE
+    Label(when (p.mode) {
+        PinMode.SET, PinMode.SET_PRIVATE -> "PIN · 내 비밀번호 정하기"
+        PinMode.AUTH -> "CHECK · 비밀번호 확인"
+        else -> "LOGIN · 비공개 운전자"
+    })
     Spacer(Modifier.height(px(14)))
-    T(if (p.forSetting) "${p.name}님 비밀번호 4자리" else "${p.name}님 비밀번호를 눌러 주세요", 26, align = TextAlign.Center)
+    T(when {
+        setting && p.first != null -> "확인을 위해 한 번 더 눌러 주세요"
+        setting -> "${p.name}님 비밀번호 4자리"
+        p.mode == PinMode.AUTH -> p.title ?: "비밀번호를 눌러 주세요"
+        else -> "${p.name}님 비밀번호를 눌러 주세요"
+    }, if (p.mode == PinMode.AUTH) 22 else 26, align = TextAlign.Center, maxLines = 2)
     Spacer(Modifier.height(px(18)))
     Row(horizontalArrangement = Arrangement.spacedBy(px(18))) {
         repeat(4) { i ->
@@ -934,13 +963,14 @@ private fun PinPad(c: ChagokController, p: Popup.Pin) {
     Spacer(Modifier.height(px(10)))
     T(p.error ?: " ", 16, Chagok.Ink, medium = true)
     Spacer(Modifier.height(px(10)))
-    val keys = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "취소", "0", "←")
+    // 앱을 켤 때처럼 꼭 비밀번호가 필요한 경우에는 '취소'가 없음
+    val keys = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", if (p.mode == PinMode.LOGIN_FORCED) "" else "취소", "0", "←")
     keys.chunked(3).forEach { row ->
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(px(10))) {
             row.forEach { k ->
                 Box(
-                    Modifier.weight(1f).height(px(64)).border(1.dp, if (k.length == 1) Chagok.Ink else Chagok.WeakBorder, RoundedCornerShape(2.dp))
-                        .clickable {
+                    Modifier.weight(1f).height(px(64)).border(1.dp, when { k.isEmpty() -> Color.Transparent; k.length == 1 -> Chagok.Ink; else -> Chagok.WeakBorder }, RoundedCornerShape(2.dp))
+                        .clickable(enabled = k.isNotEmpty()) {
                             when (k) {
                                 "취소" -> c.closePopup()
                                 "←" -> pin = pin.dropLast(1)
@@ -1190,13 +1220,12 @@ private fun SettingsScreen(c: ChagokController) {
     val all by c.store.drivers.collectAsStateWithLifecycle()
     val me = profiles[driver]
     val drivers = remember(all, carType, profiles) { c.store.visibleDrivers(all) }
-    var confirmDel by remember { mutableStateOf<String?>(null) }
 
     Column(Modifier.fillMaxSize().padding(start = px(120), end = px(120), top = px(52), bottom = px(48))) {
         Label("PARKED · 설정")
         Spacer(Modifier.height(px(20)))
         SettingRow("차량 종류") {
-            CarType.entries.forEach { t -> UnderlineChoice(t.label, carType == t) { c.store.setCarType(t) } }
+            CarType.entries.forEach { t -> UnderlineChoice(t.label, carType == t) { c.requestCarType(t) } }
         }
         T(when (carType) {
             CarType.RENTAL -> "렌터카: 운전자는 '운전자1, 운전자2…'처럼 일회용으로 만들어지고, 새 운전자가 대여를 시작하면 이전 운전자 계정은 지워져요. 다음 운전자에게 남긴 말은 그대로 전해져요."
@@ -1211,7 +1240,7 @@ private fun SettingsScreen(c: ChagokController) {
         Hairline(color = Chagok.LineSoft)
         SettingRow("공개 여부") {
             UnderlineChoice("공개", me?.private != true) { c.store.setPrivate(driver, false) }
-            UnderlineChoice("비공개", me?.private == true) { if (me?.pin != null) c.store.setPrivate(driver, true) else c.startSetPin() }
+            UnderlineChoice("비공개", me?.private == true) { if (me?.pin != null) c.store.setPrivate(driver, true) else c.startSetPin(makePrivate = true) }
         }
         T("비공개로 하면 이 운전자로 바꿀 때 비밀번호를 묻고, 이 운전자에게 온 메모 내용은 다른 운전자 화면에서 가려져요.", 16, Chagok.Sub,
             modifier = Modifier.padding(bottom = px(10)))
@@ -1220,20 +1249,19 @@ private fun SettingsScreen(c: ChagokController) {
             SettingRow("운전자 관리") {
                 Row(Modifier.weight(1f).horizontalScrollRow(), horizontalArrangement = Arrangement.spacedBy(px(10))) {
                     drivers.filter { it != driver }.forEach { name ->
-                        val asking = confirmDel == name
-                        Box(Modifier.border(1.dp, if (asking) Chagok.Ink else Chagok.Line)
-                            .background(if (asking) Chagok.Ink else Color.Transparent)
-                            .clickable { if (asking) { c.store.removeDriver(name); confirmDel = null } else confirmDel = name }
-                            .padding(horizontal = px(12), vertical = px(8))) {
-                            T(if (asking) "${name}님 지울까요? 한 번 더 누르기" else "${name}님 ✕", 17, if (asking) Chagok.OnInk else Chagok.Ink)
+                        // 누르면 확인 팝업 (비공개 운전자는 그 사람의 비밀번호가 필요)
+                        Box(Modifier.height(px(56)).border(1.dp, Chagok.Ink, RoundedCornerShape(2.dp))
+                            .clickable { c.requestRemoveDriver(name) }
+                            .padding(horizontal = px(18)), contentAlignment = Alignment.Center) {
+                            T("${name}님 ✕", 19)
                         }
                     }
                 }
             }
-            T("이름을 두 번 누르면 그 운전자를 지워요 (그 사람이 남긴 메모는 남아요)", 15, Chagok.Sub)
+            T("이름을 누르면 지울지 한 번 더 물어요. 비공개 운전자는 그 사람의 비밀번호가 필요해요", 15, Chagok.Sub)
         } else {
             SettingRow("대여") {
-                LineButton("새 운전자로 대여 시작", Modifier.width(px(320)), height = 56) { c.startRental() }
+                LineButton("새 운전자로 대여 시작", Modifier.width(px(320)), height = 56) { c.requestStartRental() }
             }
         }
         Spacer(Modifier.weight(1f))

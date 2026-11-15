@@ -23,6 +23,10 @@ class VoiceGuide(context: Context) {
     private var ready = false
     private var pending: Pair<String, (() -> Unit)?>? = null
     private var onDoneCallback: (() -> Unit)? = null
+    @Volatile private var speaking = false
+
+    /** 지금 말하는 중이거나, 말이 끝난 뒤 이어서 할 동작(듣기 등)이 남아 있음 → 다른 안내를 끼워 넣지 말 것 */
+    val busy: Boolean get() = speaking || onDoneCallback != null || pending != null
 
     private val tts = TextToSpeech(context.applicationContext, Mode.ON_DEVICE)
 
@@ -59,6 +63,7 @@ class VoiceGuide(context: Context) {
     }
 
     private fun finish() {
+        speaking = false
         val cb = onDoneCallback ?: return
         onDoneCallback = null
         // 스피커 소리가 완전히 사라진 뒤에 다음 동작(듣기 등) 시작 → 안내 음성이 마이크로 다시 들어가는 것 방지
@@ -70,11 +75,13 @@ class VoiceGuide(context: Context) {
         if (!ready) { pending = text to onDone; return }
         Log.d(TAG, "speak: $text")
         onDoneCallback = onDone
+        speaking = true
         tts.speak(text, true)   // isFinal = true: 한 번에 완성된 문장
     }
 
     fun stop() {
         onDoneCallback = null
+        speaking = false
         runCatching { tts.stop() }
     }
 

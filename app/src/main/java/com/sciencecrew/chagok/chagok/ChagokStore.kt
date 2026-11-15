@@ -55,7 +55,11 @@ enum class CarType(val label: String) { FAMILY("가정용"), BUSINESS("법인 �
  * pin: 숫자 4자리 (없으면 null), private: 비공개면 이 운전자로 바꿀 때 비밀번호를 묻고, 이 사람에게 온 메모 내용을 다른 사람에게 가림
  * temp: 렌터카 일회용 운전자 (새 운전자가 대여를 시작하면 지워짐)
  */
-data class DriverProfile(val pin: String? = null, val private: Boolean = false, val temp: Boolean = false)
+data class DriverProfile(
+    val pin: String? = null, val private: Boolean = false, val temp: Boolean = false,
+    /** 이 운전자가 등록된 때. 그 전에 남겨진 메모는 '안 읽은 메시지'로 쏟아지지 않게 함 */
+    val since: Long = 0L,
+)
 
 /** 메모·할 일·현재 운전자를 기기에 저장 (앱을 다시 켜도 유지) */
 class ChagokStore(context: Context) {
@@ -98,6 +102,7 @@ class ChagokStore(context: Context) {
             visibleDrivers().size >= MAX_DRIVERS -> "운전자는 ${MAX_DRIVERS}명까지 추가할 수 있어요"
             else -> {
                 saveDrivers(_drivers.value + name)
+                saveProfiles(_profiles.value + (name to DriverProfile(since = System.currentTimeMillis())))
                 null
             }
         }
@@ -109,6 +114,8 @@ class ChagokStore(context: Context) {
         saveDrivers(_drivers.value - name)
         saveProfiles(_profiles.value - name)
         saveSchedules(_schedules.value.filterNot { it.owner == name })
+        // 그 사람에게만 온 메모도 지움 (같은 이름으로 다시 만들어 비공개 메모를 보는 것 방지)
+        saveNotes(allNotes.filterNot { it.recipient == name })
     }
 
     /**
@@ -116,12 +123,15 @@ class ChagokStore(context: Context) {
      * 이전 일회용 운전자는 계정(비밀번호·일정)째 지움. 다음 운전자에게 남긴 메모는 그대로 전달됨.
      */
     fun startRentalDriver(): String {
-        val seq = prefs.getInt("rentalSeq", 0) + 1
+        var seq = prefs.getInt("rentalSeq", 0) + 1
+        while ("운전자$seq" in _drivers.value) seq++          // 가족 운전자와 이름이 겹치지 않게
         prefs.edit().putInt("rentalSeq", seq).apply()
         val name = "운전자$seq"
         val old = _drivers.value.filter { profile(it).temp }
+        // 새 손님은 바로 앞 손님이 대여한 뒤에 남긴 메모만 받음 (더 오래된 손님들의 메모는 전달하지 않음)
+        val since = old.maxOfOrNull { profile(it).since } ?: System.currentTimeMillis()
         saveDrivers(_drivers.value - old.toSet() + name)
-        saveProfiles(_profiles.value - old.toSet() + (name to DriverProfile(temp = true)))
+        saveProfiles(_profiles.value - old.toSet() + (name to DriverProfile(temp = true, since = since)))
         saveSchedules(_schedules.value.filterNot { it.owner in old })
         setDriver(name)
         return name
@@ -172,7 +182,7 @@ class ChagokStore(context: Context) {
     private fun saveProfiles(map: Map<String, DriverProfile>) {
         _profiles.value = map
         val o = JSONObject()
-        map.forEach { (k, v) -> o.put(k, JSONObject().apply { v.pin?.let { put("pin", it) }; put("private", v.private); put("temp", v.temp) }) }
+        map.forEach { (k, v) -> o.put(k, JSONObject().apply { v.pin?.let { put("pin", it) }; put("private", v.private); put("temp", v.temp); put("since", v.since) }) }
         prefs.edit().putString("profiles", o.toString()).apply()
     }
 
@@ -180,7 +190,7 @@ class ChagokStore(context: Context) {
         val o = JSONObject(prefs.getString("profiles", "{}") ?: "{}")
         o.keys().asSequence().associateWith { k ->
             val v = o.getJSONObject(k)
-            DriverProfile(if (v.has("pin")) v.getString("pin") else null, v.optBoolean("private"), v.optBoolean("temp"))
+            DriverProfile(if (v.has("pin")) v.getString("pin") else null, v.optBoolean("private"), v.optBoolean("temp"), v.optLong("since"))
         }
     }.getOrDefault(emptyMap())
 
@@ -222,7 +232,7 @@ class ChagokStore(context: Context) {
     }
 
     /** 지금 운전자가 아직 안 들은, 다른 사람이 남긴 메모 */
-    fun unheardFor(driver: String): List<Note> = _notes.value.filter {
+    fun unheardFor(driver: String): List<Note> = _notes.value.filter { it.createdAt >= profile(driver).since }.filter {
         it.author != driver && driver !in it.heardBy && (it.recipient == TO_ALL || it.recipient == driver)
     }
 
@@ -253,6 +263,10 @@ class ChagokStore(context: Context) {
     fun completeTodo(id: Long) = saveTodos(allTodos.map { if (it.id == id) it.copy(done = true) else it })
 
     fun pendingTodos(): List<ArrivalTodo> = _todos.value.filter { !it.done }
+
+    /** 이 운전자에게 알려 줄 할 일: 내가 나에게 남긴 것 + 다른 사람이 '다음 운전자에게' 남긴 것 */
+    fun todosFor(driver: String, list: List<ArrivalTodo> = _todos.value): List<ArrivalTodo> =
+        list.filter { !it.done && ((!it.forNextDriver && it.author == driver) || (it.forNextDriver && it.author != driver)) }
 
     // ---------------- 운행일지 ----------------
 
@@ -305,11 +319,12 @@ class ChagokStore(context: Context) {
     }.getOrNull()
 
     /** 도착한 장소 이름과 맞는 할 일 찾기 (서로 포함 관계면 같은 곳으로 봄) */
-    fun todoFor(arrivedPlace: String): ArrivalTodo? {
+    fun todoFor(arrivedPlace: String, driver: String): ArrivalTodo? {
         val a = arrivedPlace.replace(" ", "")
-        return pendingTodos().firstOrNull { t ->
+        if (a.length < 2) return null                      // 이름 없는 도착 이벤트는 무시
+        return todosFor(driver).firstOrNull { t ->
             val p = t.place.replace(" ", "")
-            p.isNotEmpty() && (a.contains(p) || p.contains(a))
+            p.length >= 2 && (a.contains(p) || p.contains(a))
         }
     }
 
